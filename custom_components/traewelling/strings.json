@@ -1,0 +1,40 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect Träwelling",
+        "description": "Create a personal access token at traewelling.de → Settings → API/Applications with the scopes read-statuses and read-statistics.",
+        "data": {
+          "token": "Access token",
+          "base_url": "Instance URL"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Update token",
+        "data": {
+          "token": "Access token"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to Träwelling.",
+      "invalid_auth": "Token invalid or missing required scopes."
+    },
+    "abort": {
+      "already_configured": "This Träwelling account is already set up.",
+      "reauth_successful": "Token updated."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Settings",
+        "data": {
+          "active_interval": "Active journey poll interval (seconds)",
+          "stats_interval": "Statistics poll interval (minutes)",
+          "stats_from": "Statistics start date (YYYY-MM-DD)"
+        }
+      }
+    }
+  }
+}
