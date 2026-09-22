@@ -94,11 +94,18 @@ class TraewellingCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         today = dt_util.now().date()
         date_to = (today + timedelta(days=1)).isoformat()
 
+        month_from = today.replace(day=1).isoformat()
+        year_from = today.replace(month=1, day=1).isoformat()
+
         for key, coro in (
             (
                 "stats",
                 self.api.async_get_statistics_overview(self._stats_from, date_to),
             ),
+            # Monat/Jahr ebenfalls über /statistics/overview mit passendem
+            # Zeitraum – das Format von /statistics/history ist nicht stabil.
+            ("stats_month", self.api.async_get_statistics_overview(month_from, date_to)),
+            ("stats_year", self.api.async_get_statistics_overview(year_from, date_to)),
             ("history", self.api.async_get_statistics_history()),
         ):
             try:

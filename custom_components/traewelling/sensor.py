@@ -124,9 +124,16 @@ def _journey_attrs(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _stat_value(data: dict[str, Any], *keys: str) -> Any:
+DISTANCE_KEYS = ("distance", "total_distance", "totalDistance", "distance_total", "sum_distance")
+DURATION_KEYS = ("duration", "total_duration", "totalDuration", "duration_total")
+CHECKIN_KEYS = ("checkin_count", "checkins", "total_checkins", "totalCheckins", "checkinCount", "count")
+
+
+def _stat_value(data: dict[str, Any], *keys: str, source: str = "stats") -> Any:
     """Wert aus /statistics/overview, Fallback auf verschachtelte Summary."""
-    stats = _stats(data)
+    stats = data.get(source) or {}
+    if not isinstance(stats, dict):
+        return None
     value = first(stats, *keys)
     if value is None:
         for nested_key in ("summary", "overview", "totals"):
@@ -173,6 +180,20 @@ def _year_key() -> str:
 def _history(data: dict[str, Any]) -> dict[str, Any] | None:
     history = data.get("history")
     return history if isinstance(history, dict) else None
+
+
+def _period_count(data: dict[str, Any], source: str, group: str, key: str) -> Any:
+    value = _stat_value(data, *CHECKIN_KEYS, source=source)
+    if isinstance(value, (int, float)):
+        return int(value)
+    return history_count(history_entry(_history(data), group, key))
+
+
+def _period_distance(data: dict[str, Any], source: str, group: str, key: str) -> Any:
+    value = meters_to_km(_stat_value(data, *DISTANCE_KEYS, source=source))
+    if value is not None:
+        return value
+    return history_distance_km(history_entry(_history(data), group, key))
 
 
 # --------------------------------------------------------------------------- #
@@ -303,7 +324,7 @@ STATS_SENSORS: tuple[TrwlSensorDescription, ...] = (
         value_fn=lambda d: meters_to_km(
             first(_user(d), "totalDistance", "trainDistance")
         )
-        or meters_to_km(_stat_value(d, "distance", "total_distance", "totalDistance")),
+        or meters_to_km(_stat_value(d, *DISTANCE_KEYS)),
     ),
     TrwlSensorDescription(
         key="duration_total",
@@ -314,16 +335,14 @@ STATS_SENSORS: tuple[TrwlSensorDescription, ...] = (
         value_fn=lambda d: minutes_to_hours(
             first(_user(d), "totalDuration", "trainDuration")
         )
-        or minutes_to_hours(_stat_value(d, "duration", "total_duration")),
+        or minutes_to_hours(_stat_value(d, *DURATION_KEYS)),
     ),
     TrwlSensorDescription(
         key="checkins_total",
         name="Check-ins gesamt",
         icon="mdi:ticket-confirmation",
         state_class=SensorStateClass.TOTAL_INCREASING,
-        value_fn=lambda d: _stat_value(
-            d, "checkin_count", "checkins", "total_checkins", "totalCheckins", "count"
-        ),
+        value_fn=lambda d: _stat_value(d, *CHECKIN_KEYS),
         attr_fn=_longest_ride_attrs,
     ),
     TrwlSensorDescription(
@@ -338,9 +357,8 @@ STATS_SENSORS: tuple[TrwlSensorDescription, ...] = (
         name="Check-ins diesen Monat",
         icon="mdi:calendar-month",
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: history_count(
-            history_entry(_history(d), "months", _month_key())
-        ),
+        value_fn=lambda d: _period_count(d, "stats_month", "months", _month_key()),
+        attr_fn=lambda d: {"api_keys": sorted((d.get("stats_month") or {}).keys())},
     ),
     TrwlSensorDescription(
         key="distance_month",
@@ -349,18 +367,15 @@ STATS_SENSORS: tuple[TrwlSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfLength.KILOMETERS,
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:map-marker-distance",
-        value_fn=lambda d: history_distance_km(
-            history_entry(_history(d), "months", _month_key())
-        ),
+        value_fn=lambda d: _period_distance(d, "stats_month", "months", _month_key()),
     ),
     TrwlSensorDescription(
         key="checkins_year",
         name="Check-ins dieses Jahr",
         icon="mdi:calendar-range",
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: history_count(
-            history_entry(_history(d), "years", _year_key())
-        ),
+        value_fn=lambda d: _period_count(d, "stats_year", "years", _year_key()),
+        attr_fn=lambda d: {"api_keys": sorted((d.get("stats_year") or {}).keys())},
     ),
     TrwlSensorDescription(
         key="distance_year",
@@ -369,9 +384,7 @@ STATS_SENSORS: tuple[TrwlSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfLength.KILOMETERS,
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:map-marker-distance",
-        value_fn=lambda d: history_distance_km(
-            history_entry(_history(d), "years", _year_key())
-        ),
+        value_fn=lambda d: _period_distance(d, "stats_year", "years", _year_key()),
     ),
     TrwlSensorDescription(
         key="username",
