@@ -106,7 +106,13 @@ def history_entry(
         return None
 
     bucket = None
-    for candidate in (group, group.rstrip("s"), f"by{group.capitalize()}"):
+    aliases = {"years": "yearly", "months": "monthly", "weeks": "weekly"}
+    for candidate in (
+        aliases.get(group, group),
+        group,
+        group.rstrip("s"),
+        f"by{group.capitalize()}",
+    ):
         if candidate in history:
             bucket = history[candidate]
             break
@@ -137,5 +143,8 @@ def history_count(entry: dict[str, Any] | None) -> int | None:
 
 
 def history_distance_km(entry: dict[str, Any] | None) -> float | None:
-    value = first(entry or {}, "distance", "totalDistance", "distance_total", "km")
-    return meters_to_km(value)
+    entry = entry or {}
+    km = first(entry, "distance_km", "km")
+    if isinstance(km, (int, float)):
+        return round(float(km), 1)
+    return meters_to_km(first(entry, "distance", "totalDistance", "distance_total"))

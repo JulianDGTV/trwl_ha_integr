@@ -154,7 +154,7 @@ class TraewellingApi:
         """GET /statistics/overview – benötigt Scope read-statistics."""
         payload = await self._get(
             "statistics/overview",
-            params={"from": date_from, "to": date_to},
+            params={"from": date_from, "until": date_to},
             allow_404=True,
         )
         return self._data(payload) if payload is not None else None
@@ -163,6 +163,32 @@ class TraewellingApi:
         """GET /statistics/history – Check-ins/Distanz je Jahr, Monat und Woche."""
         payload = await self._get("statistics/history", allow_404=True)
         return self._data(payload) if payload is not None else None
+
+    async def async_get_statistics_favorites(
+        self, date_from: str, date_to: str
+    ) -> dict[str, Any] | None:
+        """GET /statistics/favorites – Lieblingsstationen, -linien, -strecken."""
+        payload = await self._get(
+            "statistics/favorites",
+            params={"from": date_from, "until": date_to},
+            allow_404=True,
+        )
+        return self._data(payload) if payload is not None else None
+
+    async def async_get_statistics_personal(
+        self, date_from: str, date_to: str
+    ) -> dict[str, Any] | None:
+        """GET /statistics – Verkehrsmittel, Betreiber, Reisezwecke."""
+        payload = await self._get(
+            "statistics", params={"from": date_from, "until": date_to}, allow_404=True
+        )
+        return self._data(payload) if payload is not None else None
+
+    async def async_get_leaderboard_friends(self) -> list[dict[str, Any]] | None:
+        """GET /leaderboard/friends – Rangliste der letzten 7 Tage unter Freunden."""
+        payload = await self._get("leaderboard/friends", allow_404=True)
+        data = self._data(payload) if payload is not None else None
+        return data if isinstance(data, list) else None
 
     # ------------------------------------------------------------------ #
     # Check-in (Scope write-statuses)

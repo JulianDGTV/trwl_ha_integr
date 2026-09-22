@@ -96,6 +96,7 @@ class TraewellingCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         month_from = today.replace(day=1).isoformat()
         year_from = today.replace(month=1, day=1).isoformat()
+        week_from = (today - timedelta(days=today.weekday())).isoformat()
 
         for key, coro in (
             (
@@ -106,7 +107,11 @@ class TraewellingCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Zeitraum – das Format von /statistics/history ist nicht stabil.
             ("stats_month", self.api.async_get_statistics_overview(month_from, date_to)),
             ("stats_year", self.api.async_get_statistics_overview(year_from, date_to)),
+            ("stats_week", self.api.async_get_statistics_overview(week_from, date_to)),
             ("history", self.api.async_get_statistics_history()),
+            ("favorites", self.api.async_get_statistics_favorites(year_from, date_to)),
+            ("personal", self.api.async_get_statistics_personal(year_from, date_to)),
+            ("leaderboard", self.api.async_get_leaderboard_friends()),
         ):
             try:
                 result = await coro
