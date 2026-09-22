@@ -1,0 +1,134 @@
+search_stations:
+  fields:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: traewelling
+    query:
+      example: Hannover Hbf
+      selector:
+        text:
+    latitude:
+      selector:
+        number:
+          min: -90
+          max: 90
+          step: any
+    longitude:
+      selector:
+        number:
+          min: -180
+          max: 180
+          step: any
+
+get_departures:
+  fields:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: traewelling
+    station_id:
+      required: true
+      example: 4711
+      selector:
+        number:
+          min: 0
+          max: 999999999
+          mode: box
+    when:
+      example: "2026-09-23T08:00:00+02:00"
+      selector:
+        text:
+    travel_type:
+      selector:
+        select:
+          options:
+            - express
+            - regional
+            - suburban
+            - bus
+            - ferry
+            - subway
+            - tram
+            - taxi
+            - plane
+
+get_trip:
+  fields:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: traewelling
+    trip_id:
+      required: true
+      selector:
+        text:
+    line_name:
+      required: true
+      example: ICE 273
+      selector:
+        text:
+
+checkin:
+  fields:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: traewelling
+    trip_id:
+      required: true
+      selector:
+        text:
+    line_name:
+      required: true
+      example: ICE 273
+      selector:
+        text:
+    start_id:
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 999999999
+          mode: box
+    destination_id:
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 999999999
+          mode: box
+    departure:
+      required: true
+      selector:
+        text:
+    arrival:
+      required: true
+      selector:
+        text:
+    body:
+      selector:
+        text:
+          multiline: true
+    visibility:
+      default: public
+      selector:
+        select:
+          options:
+            - public
+            - unlisted
+            - followers
+            - private
+            - authenticated
+    business:
+      default: private
+      selector:
+        select:
+          options:
+            - private
+            - business
+            - commute
+    toot:
+      default: false
+      selector:
+        boolean:

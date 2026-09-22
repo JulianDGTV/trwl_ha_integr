@@ -67,6 +67,9 @@ def trip_of(status: dict[str, Any], now: datetime) -> dict[str, Any] | None:
         "name": first(user, "displayName", "username", default="?"),
         "username": user.get("username"),
         "avatar": user.get("profilePicture"),
+        "profile_url": f"https://traewelling.de/@{user['username']}"
+        if user.get("username")
+        else None,
         "line": first(checkin, "lineName", "number"),
         "category": checkin.get("category"),
         "origin": origin.get("name"),
