@@ -1,124 +1,141 @@
-# Träwelling für Home Assistant
+# 🚆 Träwelling für Home Assistant
 
-Custom Integration, die deine aktive Fahrt, die laufenden Fahrten deiner
-Freunde und deine Reisestatistiken von [traewelling.de](https://traewelling.de)
-in Home Assistant bringt.
+Custom Integration für [traewelling.de](https://traewelling.de): deine laufende
+Fahrt, die Fahrten deiner Freunde, deine Reisestatistiken – und Check-in direkt
+aus dem Dashboard.
 
-**Neu in 1.1.0:** Sensor „Freunde unterwegs“ mit allen gerade laufenden Fahrten
-der Accounts, denen du folgst – plus fertige Dashboard-Ansicht mit
-Fortschrittsbalken (siehe unten).
+## ✨ Features
 
-## Installation
+- **Meine Fahrt** – Linie, Start/Ziel, Zeiten, Verspätung, Gleis, Fortschritt, Restzeit
+- **Freunde unterwegs** – alle gerade laufenden Fahrten der Accounts, denen du folgst, mit Link zum Profil
+- **Check-in-Karte** – Station suchen (oder per Standort), Live-Abfahrten mit Verspätung und Gleis, Ausstieg wählen, einchecken
+- **Statistik** – Check-ins und Distanz für Monat, Jahr und gesamt, Punkte, Reisezeit, aktive Tage
+- **Services** für Stationssuche, Abfahrten, Fahrtverlauf und Check-in – nutzbar in eigenen Automationen
 
-1. Ordner `custom_components/traewelling` nach `<config>/custom_components/traewelling` kopieren.
-2. Home Assistant neu starten.
-3. **Einstellungen → Geräte & Dienste → Integration hinzufügen → Träwelling**.
+## 📦 Installation
 
-Für HACS: Repository als „Custom Repository“ (Kategorie *Integration*) hinzufügen.
+**HACS (empfohlen):** HACS → ⋮ → *Benutzerdefinierte Repositories* →
+`https://github.com/JulianDGTV/trwl_ha_integr`, Kategorie *Integration* →
+*Träwelling* herunterladen → Home Assistant neu starten.
 
-## Access Token
+**Manuell:** Ordner `custom_components/traewelling` nach
+`<config>/custom_components/traewelling` kopieren und neu starten.
+
+Danach: **Einstellungen → Geräte & Dienste → Integration hinzufügen → Träwelling**.
+
+## 🔑 Access Token
 
 Auf traewelling.de unter **Einstellungen → API / Anwendungen** einen persönlichen
-Access Token anlegen. Benötigte Scopes:
+Access Token anlegen:
 
-- `read-statuses` – für die aktive Fahrt und die Fahrten deiner Freunde
-- `read-statistics` – für die Statistik-Endpunkte
+| Scope | Wofür |
+|---|---|
+| `read-statuses` | aktive Fahrt und Fahrten deiner Freunde |
+| `read-statistics` | Statistik-Sensoren |
+| `write-statuses` | Check-in-Karte (Stationen, Abfahrten, Einchecken) |
 
-Fehlt `read-statistics`, läuft die Integration trotzdem; die Statistik-Sensoren
-bleiben dann nur leer (es gibt eine Warnung im Log).
+Fehlt ein Scope, läuft der Rest trotzdem weiter – nur der betroffene Teil bleibt
+leer bzw. zeigt einen Hinweis.
 
-## Entitäten
+**Token austauschen** (z. B. um `write-statuses` nachzurüsten):
+Einstellungen → Geräte & Dienste → Träwelling → ⋮ → **Neu konfigurieren**.
+
+## 📊 Entitäten
+
+> Die Entity-IDs enthalten den Gerätenamen, z. B.
+> `sensor.trawelling_deinname_punkte_gesamt`. Unten steht jeweils nur das Ende.
+> Die Dashboard-Vorlage findet die Entitäten automatisch.
 
 **Aktive Fahrt** (Abfrage standardmäßig alle 60 s)
 
-| Entität | Beschreibung |
+| Entität endet auf | Beschreibung |
 |---|---|
-| `binary_sensor.traewelling_unterwegs` | An, solange ein Check-in aktiv ist. Alle Fahrtdetails liegen als Attribute an |
-| `sensor.traewelling_aktuelle_fahrt` | Linienname, z. B. „RE 5“ |
-| `sensor.traewelling_start` / `..._ziel` | Start- und Zielhaltestelle |
-| `sensor.traewelling_abfahrt` / `..._ankunft` | Zeitstempel (Echtzeit, sonst Plan) |
-| `sensor.traewelling_verspatung_abfahrt` / `..._ankunft` | Minuten |
-| `sensor.traewelling_restfahrzeit` | Minuten bis Ankunft |
-| `sensor.traewelling_fahrtfortschritt` | 0–100 % |
-| `sensor.traewelling_distanz_aktuelle_fahrt` | km |
-| `sensor.traewelling_punkte_aktuelle_fahrt` | Punkte |
+| `binary_sensor…_unterwegs` | An, solange ein Check-in läuft; alle Fahrtdetails als Attribute |
+| `…_aktuelle_fahrt` | Linienname, z. B. „RE 5“ |
+| `…_start` / `…_ziel` | Start- und Zielhaltestelle |
+| `…_abfahrt` / `…_ankunft` | Zeitstempel (Echtzeit, sonst Plan) |
+| `…_verspatung_abfahrt` / `…_verspatung_ankunft` | Minuten |
+| `…_restfahrzeit` | Minuten bis Ankunft |
+| `…_fahrtfortschritt` | 0–100 % |
+| `…_distanz_aktuelle_fahrt` / `…_punkte_aktuelle_fahrt` | km / Punkte |
 
-> Hinweis: Die tatsächlichen Entity-IDs enthalten je nach HA-Version den
-> Gerätenamen, z. B. `sensor.trawelling_deinname_punkte_gesamt`. Die
-> Dashboard-Vorlage unten findet die Entitäten automatisch.
+**Freunde unterwegs** (zusammen mit der aktiven Fahrt abgefragt)
 
-**Freunde unterwegs** (Abfrage zusammen mit der aktiven Fahrt)
-
-| Entität | Beschreibung |
+| Entität endet auf | Beschreibung |
 |---|---|
-| `sensor.traewelling_freunde_unterwegs` | Anzahl der Freunde, die gerade fahren |
+| `…_freunde_unterwegs` | Anzahl der Freunde, die gerade fahren |
 
-„Freunde“ sind alle Accounts, denen du auf Träwelling folgst (Quelle:
-`/dashboard`, also inkl. privater Profile, die dich zugelassen haben). Pro
-Person wird nur die aktuell laufende Fahrt berücksichtigt. Das Attribut
-`trips` ist eine Liste, nach Ankunft sortiert, mit diesen Feldern pro Fahrt:
+„Freunde“ sind alle Accounts, denen du folgst (Quelle `/dashboard`, inkl.
+privater Profile, die dich zugelassen haben). Das Attribut `trips` enthält pro
+Person die laufende Fahrt, nach Ankunft sortiert:
 
 | Feld | Inhalt |
 |---|---|
-| `name`, `username`, `avatar` | Anzeigename, Benutzername, Profilbild |
-| `line`, `category` | Linie (z. B. „ICE 598“) und Verkehrsmittel |
+| `name`, `username`, `avatar`, `profile_url` | Anzeigename, Benutzername, Profilbild, Link zum Profil |
+| `line`, `category` | Linie und Verkehrsmittel |
 | `origin`, `destination` | Start- und Zielhaltestelle |
-| `departure`, `arrival` | Abfahrt/Ankunft (Echtzeit, sonst Plan, ISO-8601) |
-| `departure_planned`, `arrival_planned` | Planzeiten |
-| `delay_arrival` | Verspätung bei Ankunft in Minuten |
-| `progress`, `minutes_left` | Fortschritt in % und Restzeit (Stand letzte Abfrage) |
+| `departure`, `arrival` | Abfahrt/Ankunft (Echtzeit, sonst Plan) |
+| `departure_planned`, `arrival_planned`, `delay_arrival` | Planzeiten, Verspätung in Minuten |
+| `progress`, `minutes_left` | Fortschritt und Restzeit (Stand letzte Abfrage) |
 | `distance_km`, `body`, `url` | Distanz, Status-Text, Link zum Status |
 
-Zusätzlich enthält das Attribut `names` nur die Namen – praktisch für
-Benachrichtigungen.
+**Statistik** (standardmäßig alle 30 min – die API cacht serverseitig 1–6 h)
 
-**Statistik** (Abfrage standardmäßig alle 30 min – die API cacht serverseitig 1–6 h)
-
-| Entität | Quelle |
+| Entität endet auf | Quelle |
 |---|---|
-| `sensor.traewelling_punkte_gesamt` | Profil |
-| `sensor.traewelling_distanz_gesamt` | Profil (km) |
-| `sensor.traewelling_reisezeit_gesamt` | Profil (h) |
-| `sensor.traewelling_check_ins_gesamt` | `/statistics/overview`, mit längster/kürzester Fahrt als Attribut |
-| `sensor.traewelling_aktive_reisetage` | `/statistics/overview` |
-| `sensor.traewelling_check_ins_diesen_monat` / `..._dieses_jahr` | `/statistics/history` |
-| `sensor.traewelling_distanz_diesen_monat` / `..._dieses_jahr` | `/statistics/history` |
+| `…_punkte_gesamt`, `…_distanz_gesamt`, `…_reisezeit_gesamt` | Profil |
+| `…_check_ins_gesamt`, `…_aktive_reisetage` | `/statistics/overview` |
+| `…_check_ins_diesen_monat`, `…_distanz_diesen_monat` | `/statistics/overview` ab Monatsanfang |
+| `…_check_ins_dieses_jahr`, `…_distanz_dieses_jahr` | `/statistics/overview` ab Jahresanfang |
 
-Intervalle und der Startzeitpunkt der Statistik lassen sich über
-**Konfigurieren** an der Integration anpassen.
+Intervalle und Statistik-Startdatum: Integration → **Konfigurieren**.
 
-## Verwendete Endpunkte
+## 🎫 Check-in-Karte
 
-- `GET /api/v1/auth/user`
-- `GET /api/v1/user/statuses/active` (404 = gerade keine Fahrt)
-- `GET /api/v1/dashboard?page=1..2` (Status der Accounts, denen du folgst)
-- `GET /api/v1/statistics/overview?from=&to=`
-- `GET /api/v1/statistics/history`
-
-Feldnamen werden defensiv gelesen (mehrere Kandidaten pro Wert), weil Träwelling
-Felder gelegentlich umbenennt – siehe `API_CHANGELOG.md` im Projekt-Repo.
-Bleibt ein Statistik-Sensor leer, hilft ein Blick in die Rohdaten:
-
-```bash
-curl -H "Authorization: Bearer DEIN_TOKEN" \
-     "https://traewelling.de/api/v1/statistics/overview?from=2019-01-01&to=2026-12-31" | jq
-```
-
-Die passenden Keys lassen sich dann in `helpers.py` / `sensor.py` ergänzen.
-Debug-Logging:
+Die Karte wird von der Integration automatisch mitgeliefert – keine Ressource,
+kein HACS-Frontend-Repo nötig. Im Karten-Picker heißt sie **„Träwelling Check-in“**.
 
 ```yaml
-logger:
-  logs:
-    custom_components.traewelling: debug
+type: custom:traewelling-checkin-card
+# alles optional:
+title: Einchecken
+show_current_trip: true   # false = Karte ausblenden, solange du unterwegs bist
+entity: binary_sensor.trawelling_deinname_unterwegs   # sonst automatisch
 ```
 
-## Dashboard
+**So funktioniert sie:**
 
-Fertige Ansicht mit drei Bereichen: **Meine Fahrt**, **Freunde unterwegs**
-(je Freund Name, Linie, Start → Ziel, Abfahrt → Ankunft, Fortschrittsbalken
-und Restzeit) und **Statistik** (Monat / Jahr / gesamt). Kommt ohne
-Zusatzkarten aus und findet die Träwelling-Entitäten automatisch.
+1. **Nicht unterwegs** → Suchfeld, Button „Station in meiner Nähe“, dazu Heimatbahnhof und zuletzt genutzte Stationen
+2. **Station gewählt** → Live-Abfahrten (aktualisieren sich jede Minute) mit Verspätung, Gleis(wechsel) und Ausfällen, Filter nach Verkehrsmittel, blättern mit „Früher/Später“
+3. **Abfahrt gewählt** → alle folgenden Halte mit Ankunftszeiten
+4. **Ausstieg gewählt** → Statustext, Sichtbarkeit und Reiseart, dann „Jetzt einchecken“
+5. **Unterwegs** → die Karte zeigt deine laufende Fahrt mit Fortschrittsbalken
+
+Sichtbarkeit, Reiseart und Verkehrsmittel-Filter merkt sich die Karte pro Gerät.
+Der Token bleibt dabei in Home Assistant – die Karte spricht nur mit den
+Services der Integration.
+
+## 🛠️ Services
+
+| Service | Rückgabe | Zweck |
+|---|---|---|
+| `traewelling.search_stations` | ✅ | `query` → Treffer · `latitude`/`longitude` → nächste Station · ohne Angaben → Heimatbahnhof + zuletzt genutzt |
+| `traewelling.get_departures` | ✅ | `station_id`, optional `when`, `travel_type` |
+| `traewelling.get_trip` | ✅ | `trip_id`, `line_name` → alle Halte |
+| `traewelling.checkin` | optional | `trip_id`, `line_name`, `start_id`, `destination_id`, `departure`, `arrival`, optional `body`, `visibility`, `business`, `toot` |
+
+Beispiel (Entwicklerwerkzeuge → Aktionen, „Antwort zurückgeben“):
+
+```yaml
+action: traewelling.search_stations
+data:
+  query: Hannover Hbf
+```
+
+## 🖥️ Dashboard
+
+Fertige Ansicht mit **Meine Fahrt** (Check-in-Karte), **Freunde unterwegs**
+(Name antippen → Profil) und **Statistik**.
 
 Einfügen: Dashboard bearbeiten → **„+“** (neue Ansicht) → ⋮ →
 **„In YAML bearbeiten“** → Inhalt ersetzen → Speichern.
@@ -135,30 +152,9 @@ sections:
       - type: heading
         heading: Meine Fahrt
         icon: mdi:train
-      - type: markdown
+      - type: custom:traewelling-checkin-card
         grid_options:
           columns: full
-        content: |-
-          {% set e = integration_entities('traewelling') %}
-          {% set b = e | select('match', 'binary_sensor\.') | first | default(none) %}
-          {% if b and is_state(b, 'on') %}
-          {% set dep = as_datetime(state_attr(b, 'departure_real') or state_attr(b, 'departure_planned')) %}
-          {% set arr = as_datetime(state_attr(b, 'arrival_real') or state_attr(b, 'arrival_planned')) %}
-          {% set p = ((now() - dep).total_seconds() / ((arr - dep).total_seconds() or 1) * 100) | round(0) | int %}
-          {% set p = [0, [100, p] | min] | max %}
-          {% set n = (p / 5) | round(0) | int %}
-          {% set left = [0, ((arr - now()).total_seconds() / 60) | int] | max %}
-
-          ### 🚆 {{ state_attr(b, 'line') or 'Fahrt' }}
-
-          **{{ state_attr(b, 'origin') }}** → **{{ state_attr(b, 'destination') }}**
-
-          🕐 {{ as_local(dep).strftime('%H:%M') }} → {{ as_local(arr).strftime('%H:%M') }}{% if state_attr(b, 'destination_platform') %} · Gleis {{ state_attr(b, 'destination_platform') }}{% endif %}
-
-          `{{ '█' * n }}{{ '░' * (20 - n) }}` **{{ p }} %** · noch {{ left }} min
-          {% else %}
-          🏠 Gerade nicht unterwegs.
-          {% endif %}
 
   - type: grid
     cards:
@@ -181,7 +177,7 @@ sections:
           {% set n = (p / 5) | round(0) | int %}
           {% set left = [0, ((arr - now()).total_seconds() / 60) | int] | max %}
 
-          ### 👤 {{ t.name }}{% if t.line %} · {{ t.line }}{% endif %}
+          ### 👤 [{{ t.name }}](https://traewelling.de/@{{ t.username }}){% if t.line %} · {{ t.line }}{% endif %}
 
           **{{ t.origin }}** → **{{ t.destination }}**
 
@@ -222,7 +218,7 @@ sections:
           ⭐ **{{ v('punkte_gesamt') }}** Punkte · ⏱️ **{{ v('reisezeit_gesamt') }}** Reisezeit · 📅 **{{ v('aktive_reisetage') }}** aktive Tage
 ```
 
-## Automatisierungs-Beispiele
+## 🤖 Automatisierungs-Beispiele
 
 ```yaml
 automation:
@@ -256,8 +252,37 @@ automation:
           entity_id: light.flur
 ```
 
-## Changelog
+Entity-IDs an deine Installation anpassen.
 
-- **1.1.0** – Neuer Sensor „Freunde unterwegs“ (laufende Fahrten gefolgter
-  Accounts via `/dashboard`), Dashboard-Vorlage mit Fortschrittsbalken.
-- **1.0.0** – Erste Version: aktive Fahrt und Statistiken.
+## 🔌 Verwendete Endpunkte
+
+| Endpunkt | Scope |
+|---|---|
+| `GET /api/v1/auth/user` | – |
+| `GET /api/v1/user/statuses/active` (404 = keine Fahrt) | `read-statuses` |
+| `GET /api/v1/dashboard` | `read-statuses` |
+| `GET /api/v1/statistics/overview`, `/statistics/history` | `read-statistics` |
+| `GET /api/v1/trains/station/autocomplete/{query}`, `/nearby`, `/history` | `write-statuses` |
+| `GET /api/v1/station/{id}/departures` | `write-statuses` |
+| `GET /api/v1/trains/trip` | `write-statuses` |
+| `POST /api/v1/trains/checkin` | `write-statuses` |
+
+## 🩺 Fehlersuche
+
+- **Check-in-Karte meldet „Zugriff abgelehnt“** → Token ohne `write-statuses`; neuen Token anlegen und über *Neu konfigurieren* eintragen.
+- **Karte „Custom element doesn't exist“** → Home Assistant nach dem Update neu starten und die Seite neu laden (Browser-Cache).
+- **Monat/Jahr leer** → Attribut `api_keys` am Sensor „Check-ins diesen Monat“ zeigt, welche Felder die API liefert.
+- **Debug-Logging:**
+
+```yaml
+logger:
+  logs:
+    custom_components.traewelling: debug
+```
+
+## 📝 Changelog
+
+- **1.2.0** – 🎫 Check-in-Karte mit Stationssuche, Standort, Live-Abfahrten und Ausstiegswahl · 🛠️ Services `search_stations`, `get_departures`, `get_trip`, `checkin` · 👤 Freunde verlinken auf ihr Profil · 🔑 Token über „Neu konfigurieren“ austauschbar
+- **1.1.1** – 🐛 Monat/Jahr-Statistik über `/statistics/overview`
+- **1.1.0** – 👥 Sensor „Freunde unterwegs“, Dashboard-Vorlage
+- **1.0.0** – 🎉 Erste Version: aktive Fahrt und Statistiken
