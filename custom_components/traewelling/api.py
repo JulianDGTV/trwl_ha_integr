@@ -90,6 +90,20 @@ class TraewellingApi:
             return None
         return self._data(payload) or None
 
+    async def async_get_dashboard(self, pages: int = 2) -> list[dict[str, Any]]:
+        """GET /dashboard – neueste Status von dir und allen, denen du folgst."""
+        statuses: list[dict[str, Any]] = []
+        for page in range(1, pages + 1):
+            payload = await self._get("dashboard", params={"page": page}, allow_404=True)
+            items = self._data(payload) if payload is not None else None
+            if not isinstance(items, list) or not items:
+                break
+            statuses.extend(items)
+            links = payload.get("links") if isinstance(payload, dict) else None
+            if isinstance(links, dict) and not links.get("next"):
+                break
+        return statuses
+
     async def async_get_statistics_overview(
         self, date_from: str, date_to: str
     ) -> dict[str, Any] | None:

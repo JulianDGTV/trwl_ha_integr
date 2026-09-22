@@ -266,6 +266,25 @@ ACTIVE_SENSORS: tuple[TrwlSensorDescription, ...] = (
     ),
 )
 
+def _friends(data: dict[str, Any]) -> list[dict[str, Any]]:
+    friends = data.get("friends")
+    return friends if isinstance(friends, list) else []
+
+
+FRIENDS_SENSORS: tuple[TrwlSensorDescription, ...] = (
+    TrwlSensorDescription(
+        key="friends_travelling",
+        name="Freunde unterwegs",
+        icon="mdi:account-group",
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda d: len(_friends(d)),
+        attr_fn=lambda d: {
+            "trips": _friends(d),
+            "names": [t.get("name") for t in _friends(d)],
+        },
+    ),
+)
+
 STATS_SENSORS: tuple[TrwlSensorDescription, ...] = (
     TrwlSensorDescription(
         key="points_total",
@@ -373,7 +392,7 @@ async def async_setup_entry(
     coordinator: TraewellingCoordinator = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
         TraewellingSensor(coordinator, description)
-        for description in (*ACTIVE_SENSORS, *STATS_SENSORS)
+        for description in (*ACTIVE_SENSORS, *FRIENDS_SENSORS, *STATS_SENSORS)
     )
 
 

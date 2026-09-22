@@ -22,6 +22,7 @@ from .const import (
     DEFAULT_STATS_INTERVAL,
     DOMAIN,
 )
+from .friends import active_friend_trips
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -67,7 +68,19 @@ class TraewellingCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self._async_update_statistics(data)
             self._last_stats = now
 
+        await self._async_update_friends(data)
         return data
+
+    async def _async_update_friends(self, data: dict[str, Any]) -> None:
+        """Laufende Fahrten gefolgter Accounts. Fehler hier sind nicht fatal."""
+        try:
+            statuses = await self.api.async_get_dashboard()
+        except TraewellingError as err:
+            # Auch Auth-Fehler nur loggen: der Rest der Integration soll weiterlaufen.
+            _LOGGER.warning("Dashboard (Freunde) konnte nicht geladen werden: %s", err)
+            data.setdefault("friends", [])
+            return
+        data["friends"] = active_friend_trips(statuses, data.get("user"))
 
     async def _async_update_statistics(self, data: dict[str, Any]) -> None:
         """Profil + Statistik-Endpunkte. Fehler hier sind nicht fatal."""
