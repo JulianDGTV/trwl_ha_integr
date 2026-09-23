@@ -16,7 +16,7 @@
  */
 
 const DOMAIN = "traewelling";
-const VERSION = "1.6.1";
+const VERSION = "1.6.2";
 
 const TYPES = [
   ["", "Alle"],
@@ -1257,7 +1257,10 @@ if (!customElements.get("traewelling-friends-card")) {
  *   title: Statistik
  *   show_leaderboard: true
  *   show_favorites: true
- *   metric: checkins            # oder km – Startansicht des Diagramms
+ *   metric: checkins
+ *   header: true                # false = ohne eigene Kopfzeile (für Dashboard-Überschriften)
+ *   show: [kpis, facts]         # nur bestimmte Bausteine: kpis, facts, chart, longest,
+ *                               # favorites | fav_stations | fav_lines | fav_routes, leaderboard            # oder km – Startansicht des Diagramms
  */
 const MONTHS_DE = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"];
 const fmt0 = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 0 });
@@ -1286,8 +1289,28 @@ class TraewellingStatsCard extends HTMLElement {
     return {};
   }
 
+  /** Welche Bausteine diese Karte zeigt (Standard: alle). */
+  _parts() {
+    const all = ["kpis", "facts", "chart", "longest", "fav_stations", "fav_lines", "fav_routes", "leaderboard"];
+    let show = this._config.show;
+    if (typeof show === "string") show = [show];
+    if (!Array.isArray(show) || !show.length) {
+      show = all.filter(
+        (p) =>
+          (this._config.show_favorites !== false || !p.startsWith("fav_")) &&
+          (this._config.show_leaderboard !== false || p !== "leaderboard")
+      );
+    }
+    return show.flatMap((p) => (p === "favorites" ? ["fav_stations", "fav_lines", "fav_routes"] : [p]));
+  }
+
+  /** Alles-in-einer-Karte → Zwischenüberschriften zeigen. */
+  _full() {
+    return this._config.header !== false && this._parts().length > 3;
+  }
+
   getCardSize() {
-    return 9;
+    return Math.max(2, Math.min(9, this._parts().length * 2));
   }
 
   getGridOptions() {
@@ -1441,7 +1464,7 @@ class TraewellingStatsCard extends HTMLElement {
     const medal = (r) => (r === 1 ? "🥇" : r === 2 ? "🥈" : r === 3 ? "🥉" : r);
     const boardHtml =
       Array.isArray(board) && board.length
-        ? `<div class="sec-title"><ha-icon icon="mdi:podium"></ha-icon> Freunde · letzte 7 Tage</div>
+        ? `${this._full() ? `<div class="sec-title"><ha-icon icon="mdi:podium"></ha-icon> Freunde · letzte 7 Tage</div>` : ""}
            <div class="board">${board
              .slice(0, 5)
              .map(
@@ -1474,38 +1497,58 @@ class TraewellingStatsCard extends HTMLElement {
             .join("")}
         </div>`;
     };
-    const favs = this._config.show_favorites
-      ? [
-          favList("lieblingsstation", "mdi:bank", "Stationen", (x) => x.name),
-          favList("lieblingslinie", "mdi:train-variant", "Linien", (x) =>
-            /^\d+$/.test(String(x.linename)) ? `Linie ${x.linename}` : x.linename
-          ),
-          favList("lieblingsstrecke", "mdi:swap-horizontal", "Strecken", (x) => `${x.origin} → ${x.destination}`),
-        ].join("")
-      : "";
+    const favParts = {
+      fav_stations: () => favList("lieblingsstation", "mdi:bank", "Stationen", (x) => x.name),
+      fav_lines: () =>
+        favList("lieblingslinie", "mdi:train-variant", "Linien", (x) =>
+          /^\d+$/.test(String(x.linename)) ? `Linie ${x.linename}` : x.linename
+        ),
+      fav_routes: () =>
+        favList("lieblingsstrecke", "mdi:swap-horizontal", "Strecken", (x) => `${x.origin} → ${x.destination}`),
+    };
+    const parts = this._parts();
+    const favs = Object.keys(favParts)
+      .filter((k) => parts.includes(k))
+      .map((k) => favParts[k]())
+      .join("");
     const favHtml = favs
-      ? `<div class="sec-title"><ha-icon icon="mdi:heart"></ha-icon> Favoriten ${new Date().getFullYear()}</div><div class="favs">${favs}</div>`
+      ? `${this._full() ? `<div class="sec-title"><ha-icon icon="mdi:heart"></ha-icon> Favoriten ${new Date().getFullYear()}</div>` : ""}<div class="favs">${favs}</div>`
       : "";
 
-    this.shadowRoot.innerHTML = `${STYLE}${STATS_STYLE}<ha-card>
-      <div class="head">
-        <ha-icon icon="mdi:chart-bar"></ha-icon>
-        <span class="title grow">${esc(this._config.title)}</span>
-        <a class="chip" href="https://traewelling.de/statistics" target="_blank" rel="noopener">traewelling.de <ha-icon icon="mdi:open-in-new"></ha-icon></a>
-      </div>
-      <div class="pad">
-        <div class="kpis">
+    const blocks = {
+      kpis: () => `<div class="kpis">
           ${kpi("Woche", "check_ins_diese_woche", "distanz_diese_woche")}
           ${kpi("Monat", "check_ins_diesen_monat", "distanz_diesen_monat")}
           ${kpi("Jahr", "check_ins_dieses_jahr", "distanz_dieses_jahr")}
           ${kpi("Gesamt", "check_ins_gesamt", "distanz_gesamt")}
-        </div>
-        <div class="facts">${facts}</div>
-        ${Array.isArray(months) && months.length ? this._chart(months) : `<div class="hint">Monatsverlauf wird geladen …</div>`}
-        ${longestHtml}
-        ${favHtml}
-        ${boardHtml}
-      </div>
+        </div>`,
+      facts: () => `<div class="facts">${facts}</div>`,
+      chart: () =>
+        Array.isArray(months) && months.length
+          ? this._chart(months)
+          : `<div class="hint">Monatsverlauf wird geladen …</div>`,
+      longest: () => longestHtml,
+      favorites: () => favHtml,
+      leaderboard: () =>
+        boardHtml || (this._full() ? "" : `<div class="hint">Noch keine Rangliste – folgst du schon jemandem?</div>`),
+    };
+    const order = ["kpis", "facts", "chart", "longest", "favorites", "leaderboard"];
+    const want = new Set(parts.map((p) => (p.startsWith("fav_") ? "favorites" : p)));
+    const inner = order
+      .filter((k) => want.has(k))
+      .map((k) => blocks[k]())
+      .join("");
+    const header =
+      this._config.header === false
+        ? ""
+        : `<div class="head">
+        <ha-icon icon="mdi:chart-bar"></ha-icon>
+        <span class="title grow">${esc(this._config.title)}</span>
+        <a class="chip" href="https://traewelling.de/statistics" target="_blank" rel="noopener">traewelling.de <ha-icon icon="mdi:open-in-new"></ha-icon></a>
+      </div>`;
+    this.shadowRoot.innerHTML = `${STYLE}${STATS_STYLE}<ha-card>
+      ${header}
+      <div class="pad ${header ? "" : "nohead"} parts-${want.size === 1 ? [...want][0] : "multi"}">${inner}</div>
     </ha-card>`;
     this._wire();
   }
@@ -1583,6 +1626,12 @@ const STATS_STYLE = `<style>
   .pts { flex: none; min-width: 52px; text-align: right; }
   .bkm { flex: none; min-width: 64px; text-align: right; color: var(--secondary-text-color); }
   .chip ha-icon { --mdc-icon-size: 14px; }
+  .pad.nohead { padding-top: 16px; }
+  .parts-chart .chart-head { margin-top: 0; }
+  .parts-longest .longest, .parts-favorites .favs { margin-top: 0; }
+  .parts-facts .facts { margin: 0; }
+  .parts-longest .longest { padding: 0; background: none; }
+  .parts-favorites .fav { padding: 0; background: none; }
   .favs { display: grid; gap: 10px; }
   .fav { padding: 10px 12px; border-radius: 12px; background: var(--secondary-background-color); }
   .fav-title { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; font-size: .8em; text-transform: uppercase; letter-spacing: .06em; color: var(--secondary-text-color); }
