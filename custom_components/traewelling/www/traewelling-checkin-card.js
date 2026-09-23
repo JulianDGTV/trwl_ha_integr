@@ -12,10 +12,11 @@
  *   show_current_trip: true      # false = Karte ausblenden, solange du fährst
  *   title: Einchecken
  *   location_entity: device_tracker.mein_handy   # Standortquelle für „In meiner Nähe“
+ *   upcoming_entity: sensor.trawelling_xyz_nachste_fahrt   # sonst automatisch
  */
 
 const DOMAIN = "traewelling";
-const VERSION = "1.3.2";
+const VERSION = "1.6.0";
 
 const TYPES = [
   ["", "Alle"],
@@ -46,6 +47,13 @@ const esc = (v) =>
   String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
 const toDate = (v) => (v ? new Date(v) : null);
+const pad2 = (n) => String(n).padStart(2, "0");
+const isoDay = (d) => (d ? `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}` : null);
+const deDate = (v) => {
+  if (!v) return null;
+  const [y, m, d] = String(v).slice(0, 10).split("-");
+  return y && m && d ? `${d}.${m}.${y}` : String(v);
+};
 const hhmm = (d) => (d ? d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }) : "–");
 const delayMin = (planned, real) => {
   const p = toDate(planned), r = toDate(real);
@@ -84,6 +92,81 @@ function lineColor(dep) {
   return ["var(--primary-color)", "#fff"];
 }
 
+function modeIcon(category) {
+  const c = String(category || "").toLowerCase();
+  if (c.includes("tram")) return "mdi:tram";
+  if (c.includes("subway")) return "mdi:subway-variant";
+  if (c.includes("bus")) return "mdi:bus";
+  if (c.includes("ferry")) return "mdi:ferry";
+  if (c.includes("plane")) return "mdi:airplane";
+  if (c.includes("taxi")) return "mdi:taxi";
+  return "mdi:train";
+}
+
+/** Fahrt-Block (Linie, Zeitleiste, Fortschritt) – für eigene und Freundes-Fahrten. */
+function tripHtml(t, opts = {}) {
+  const dep = toDate(t.departure_real || t.departure || t.departure_planned);
+  const arr = toDate(t.arrival_real || t.arrival || t.arrival_planned);
+  const depPlanned = toDate(t.departure_planned) || dep;
+  const arrPlanned = toDate(t.arrival_planned) || arr;
+  const now = new Date();
+  let p = 0;
+  if (dep && arr && arr > dep) p = Math.max(0, Math.min(100, ((now - dep) / (arr - dep)) * 100));
+  const left = arr ? Math.max(0, Math.round((arr - now) / 60000)) : null;
+  const until = dep ? Math.max(0, Math.round((dep - now) / 60000)) : null;
+  const ride = dep && arr ? Math.round((arr - dep) / 60000) : null;
+  const dDep = depPlanned && dep ? Math.round((dep - depPlanned) / 60000) : 0;
+  const dArr = arrPlanned && arr ? Math.round((arr - arrPlanned) / 60000) : 0;
+  const [bg, fg] = lineColor({ product: t.category });
+
+  let pill;
+  if (opts.upcoming) pill = `<span class="pill soon">${until === 0 ? "jetzt" : `in ${until} min`}</span>`;
+  else if (dArr > 0) pill = `<span class="pill late">+${dArr} min</span>`;
+  else if (t.arrival_real || t.departure_real) pill = `<span class="pill ok">pünktlich</span>`;
+  else pill = "";
+
+  const stop = (cls, time, delay, name, platform) => `
+      <div class="stop ${cls}">
+        <span class="dot"></span>
+        <span class="t">${hhmm(time)}</span>
+        ${delay > 0 ? `<span class="d">+${delay}</span>` : ""}
+        <span class="name">${esc(name)}</span>
+        ${platform ? `<span class="plat">Gl. ${esc(platform)}</span>` : ""}
+      </div>`;
+
+  const meta = (opts.upcoming
+    ? [until !== null ? (until === 0 ? "fährt jetzt ab" : `Abfahrt in ${until} min`) : null, ride ? `${ride} min Fahrt` : null]
+    : [`${Math.round(p)} %`, left !== null ? (left === 0 ? "kommt an" : `noch ${left} min`) : null]
+  )
+    .concat([t.distance_km ? `${esc(t.distance_km)} km` : null, t.points ? `${esc(t.points)} Punkte` : null])
+    .filter(Boolean)
+    .map((x) => `<span>${x}</span>`)
+    .join("");
+
+  return `
+    <div class="trip" style="--line:${esc(bg)};--line-fg:${esc(fg)}">
+      <div class="trip-top">
+        <span class="badge">${esc(t.line || "Fahrt")}</span>
+        <span class="dir">${t.body ? `„${esc(t.body)}“` : ""}</span>
+        ${pill}
+      </div>
+      <div class="stops">
+        ${stop("from", depPlanned, dDep, t.origin, t.origin_platform)}
+        ${stop("to", arrPlanned, dArr, t.destination, t.destination_platform)}
+      </div>
+      ${opts.upcoming ? "" : `
+      <div class="progress" role="progressbar" aria-valuenow="${Math.round(p)}" aria-valuemin="0" aria-valuemax="100">
+        <div class="fill" style="width:${p.toFixed(1)}%"></div>
+        <div class="knob" style="left:${p.toFixed(1)}%"><ha-icon icon="${modeIcon(t.category)}"></ha-icon></div>
+      </div>`}
+      <div class="meta">${meta}</div>
+    </div>`;
+}
+
+// Laufende Check-ins überleben ein Neu-Erzeugen der Karte durch Home Assistant.
+const FLOWS = new Map();
+const FLOW_TTL = 20 * 60 * 1000;
+
 class TraewellingCheckinCard extends HTMLElement {
   constructor() {
     super();
@@ -113,12 +196,32 @@ class TraewellingCheckinCard extends HTMLElement {
       visibility: store.get("visibility", "public"),
       business: store.get("business", "private"),
       result: null,
+      tickets: null, // null = lädt, sonst { available, tickets, suggested }
+      ticketsDate: null,
+      ticketId: undefined, // undefined = noch nicht gewählt → Vorschlag übernehmen
     };
   }
 
   setConfig(config) {
     this._config = { show_current_trip: true, title: "Einchecken", ...(config || {}) };
+    this._flowKey = JSON.stringify([this._config.entity || "", this._config.title]);
+    const saved = FLOWS.get(this._flowKey);
+    if (saved && saved.s !== this._s && Date.now() - saved.t < FLOW_TTL && saved.s.step !== "start") {
+      this._s = saved.s;
+      this._s.loading = false;
+    }
     if (this._hass) this._render();
+  }
+
+  _saveFlow() {
+    if (!this._flowKey) return;
+    if (this._s.step === "start" && !this._s.whileTravelling) FLOWS.delete(this._flowKey);
+    else FLOWS.set(this._flowKey, { s: this._s, t: Date.now() });
+  }
+
+  /** Nutzer steckt gerade mitten im Check-in → nichts dazwischenfunken. */
+  _busy() {
+    return this._s.step !== "start" || this._s.whileTravelling || Boolean(this._s.query);
   }
 
   static getStubConfig() {
@@ -139,17 +242,17 @@ class TraewellingCheckinCard extends HTMLElement {
     const key = this._travelKey();
     if (first || key !== this._lastKey) {
       this._lastKey = key;
-      if (!["confirm", "done"].includes(this._s.step) || this._isTravelling()) {
-        if (this._isTravelling() && this._s.step !== "done") this._s.step = "start";
-        this._render();
-      }
+      // Nur im Ruhezustand zwischen „Unterwegs“ und Check-in umschalten –
+      // ein angefangener Check-in wird nie unterbrochen.
+      if (first || !this._busy()) this._render();
     }
   }
 
   connectedCallback() {
     this._timers.tick = setInterval(() => {
-      if (this._isTravelling()) this._render();
+      if ((this._isTravelling() || this._upcomingState()) && !this._busy()) this._render();
     }, 30000);
+    if (this._s.step === "departures" && this._s.station) this._startLiveRefresh();
   }
 
   disconnectedCallback() {
@@ -187,9 +290,29 @@ class TraewellingCheckinCard extends HTMLElement {
     return this._travelState()?.state === "on";
   }
 
+  /** Sensor „Nächste Fahrt“ – eigene Fahrt, die in der nächsten Stunde startet. */
+  _upcomingState() {
+    const hass = this._hass;
+    if (!hass) return undefined;
+    let id = this._config?.upcoming_entity;
+    if (!id) {
+      const own = Object.values(hass.entities || {})
+        .filter((e) => e.platform === DOMAIN && e.entity_id.startsWith("sensor."))
+        .map((e) => e.entity_id);
+      const all = Object.keys(hass.states || {}).filter((x) => x.startsWith("sensor."));
+      id = own.find((x) => /_nachste_fahrt$/.test(x)) || all.find((x) => /tra?e?welling.*_nachste_fahrt$/.test(x));
+    }
+    const st = id ? hass.states[id] : undefined;
+    return st && st.attributes?.origin && !["unknown", "unavailable"].includes(st.state) ? st : undefined;
+  }
+
   _travelKey() {
     const st = this._travelState();
-    return st ? `${st.state}|${st.attributes.status_id || ""}|${st.attributes.arrival_real || ""}` : "none";
+    const up = this._upcomingState();
+    return [
+      st ? `${st.state}|${st.attributes.status_id || ""}|${st.attributes.arrival_real || ""}` : "none",
+      up ? `${up.attributes.status_id}|${up.state}|${up.attributes.departure_real || ""}` : "-",
+    ].join("#");
   }
 
   async _call(service, data = {}) {
@@ -226,8 +349,9 @@ class TraewellingCheckinCard extends HTMLElement {
     this._s.recent = [];
     try {
       const r = await this._call("search_stations", {});
-      this._s.recent = r.stations || [];
       this._s.home = r.home || null;
+      const homeId = this._s.home?.id;
+      this._s.recent = (r.stations || []).filter((st) => st.id !== homeId).slice(0, 5);
     } catch (err) {
       this._s.error = err?.message || String(err);
     }
@@ -394,6 +518,31 @@ class TraewellingCheckinCard extends HTMLElement {
     this._s.stop = stop;
     this._s.step = "confirm";
     this._render();
+    this._loadTickets();
+  }
+
+  async _loadTickets() {
+    const day = isoDay(toDate(this._s.departure?.planned)) || isoDay(new Date());
+    if (this._s.tickets && this._s.ticketsDate === day) return;
+    this._s.tickets = null;
+    this._s.ticketsDate = day;
+    this._render();
+    try {
+      const r = await this._call("get_tickets", { date: day });
+      const list = r.tickets || [];
+      this._s.tickets = { available: r.available !== false, tickets: list };
+      if (this._s.ticketId === undefined) {
+        // Vorschlag: zuletzt genutzte Fahrkarte laut Träwelling, sonst die
+        // zuletzt in dieser Karte gewählte – jeweils nur, wenn am Tag gültig.
+        const local = store.get("lastTicket", "");
+        const valid = (id) => id && list.some((t) => t.id === id);
+        this._s.ticketId = valid(r.suggested) ? r.suggested : valid(local) ? local : "";
+      }
+    } catch (err) {
+      this._s.tickets = { available: false, tickets: [], error: err?.message || String(err) };
+      if (this._s.ticketId === undefined) this._s.ticketId = "";
+    }
+    if (this._s.step === "confirm") this._render();
   }
 
   async _checkin() {
@@ -412,7 +561,12 @@ class TraewellingCheckinCard extends HTMLElement {
         business: this._s.business,
       };
       if (this._s.body.trim()) data.body = this._s.body.trim();
+      if (this._s.ticketId) {
+        data.ticket_id = this._s.ticketId;
+        store.set("lastTicket", this._s.ticketId);
+      }
       this._s.result = await this._call("checkin", data);
+      this._s.result.ticket_name = (this._s.tickets?.tickets || []).find((t) => t.id === this._s.ticketId)?.name;
       this._s.step = "done";
       clearInterval(this._timers.live);
     });
@@ -452,6 +606,10 @@ class TraewellingCheckinCard extends HTMLElement {
       }
       case "nearby":
         this._nearby();
+        break;
+      case "connection":
+        this._s.whileTravelling = true;
+        this._render();
         break;
       case "type":
         this._s.travelType = el.dataset.v;
@@ -508,6 +666,7 @@ class TraewellingCheckinCard extends HTMLElement {
     const t = ev.target;
     if (t.id === "visibility") this._s.visibility = t.value;
     if (t.id === "business") this._s.business = t.value;
+    if (t.id === "ticket") this._s.ticketId = t.value;
   }
 
   // ------------------------------------------------------------------ //
@@ -524,7 +683,8 @@ class TraewellingCheckinCard extends HTMLElement {
       this._wired = true;
     }
 
-    if (this._isTravelling() && this._s.step !== "done") {
+    this._saveFlow();
+    if (this._isTravelling() && !this._busy()) {
       if (!this._config.show_current_trip) {
         this.style.display = "none";
         root.innerHTML = "";
@@ -535,6 +695,11 @@ class TraewellingCheckinCard extends HTMLElement {
       return;
     }
     this.style.display = "";
+
+    if (this._upcomingState() && !this._busy()) {
+      root.innerHTML = `${STYLE}<ha-card>${this._renderUpcoming()}</ha-card>`;
+      return;
+    }
 
     if (!this._entityId()) {
       root.innerHTML = `${STYLE}<ha-card><div class="pad err">Keine Träwelling-Entität gefunden. Ist die Integration eingerichtet?</div></ha-card>`;
@@ -622,7 +787,8 @@ class TraewellingCheckinCard extends HTMLElement {
     return `
       <div class="head">
         <ha-icon icon="mdi:ticket-confirmation"></ha-icon>
-        <span class="title">${esc(this._config.title)}</span>
+        <span class="title grow">${esc(this._config.title)}</span>
+        ${this._isTravelling() || this._upcomingState() ? `<button class="chip" data-a="reset">Zur Fahrt</button>` : ""}
       </div>
       <div class="pad">
         <div class="search">
@@ -737,6 +903,7 @@ class TraewellingCheckinCard extends HTMLElement {
           <span>Statustext (optional) <small id="count">${this._s.body.length}/280</small></span>
           <textarea id="body" maxlength="280" rows="2" placeholder="Was geht auf der Fahrt?">${esc(this._s.body)}</textarea>
         </label>
+        ${this._ticketField()}
         <div class="two">
           <label class="field"><span>Sichtbarkeit</span><select id="visibility">${opt(VISIBILITY, this._s.visibility)}</select></label>
           <label class="field"><span>Reiseart</span><select id="business">${opt(BUSINESS, this._s.business)}</select></label>
@@ -745,6 +912,20 @@ class TraewellingCheckinCard extends HTMLElement {
           <ha-icon icon="mdi:check-circle"></ha-icon> Jetzt einchecken
         </button>
       </div>`;
+  }
+
+  _ticketField() {
+    const t = this._s.tickets;
+    if (t === null) {
+      return `<label class="field"><span>🎫 Fahrkarte</span><select disabled><option>Lade Fahrkarten …</option></select></label>`;
+    }
+    if (!t.available || !t.tickets.length) return "";
+    const label = (x) =>
+      `${esc(x.name)} · ${x.valid_until ? `gültig bis ${esc(deDate(x.valid_until))}` : "unbefristet"}`;
+    const opts = [`<option value="" ${!this._s.ticketId ? "selected" : ""}>Keine Fahrkarte</option>`]
+      .concat(t.tickets.map((x) => `<option value="${esc(x.id)}" ${x.id === this._s.ticketId ? "selected" : ""}>${label(x)}</option>`))
+      .join("");
+    return `<label class="field"><span>🎫 Fahrkarte</span><select id="ticket">${opts}</select></label>`;
   }
 
   _renderDone() {
@@ -756,6 +937,8 @@ class TraewellingCheckinCard extends HTMLElement {
         <div class="title">Eingecheckt!</div>
         ${r.points != null ? `<div class="pts">+${esc(r.points)} Punkte</div>` : ""}
         ${also.length ? `<div class="sub">Auch in diesem Zug: ${also.map(esc).join(", ")}</div>` : ""}
+        ${r.ticket_assigned ? `<div class="sub">🎫 ${esc(r.ticket_name || "Fahrkarte")} hinterlegt</div>` : ""}
+        ${r.ticket_assigned === false ? `<div class="err">⚠️ Fahrkarte konnte nicht hinterlegt werden${r.ticket_error ? `: ${esc(r.ticket_error)}` : ""}</div>` : ""}
         <div class="actions">
           ${r.url ? `<a class="chip" href="${esc(r.url)}" target="_blank" rel="noopener">Status öffnen</a>` : ""}
           <button class="chip on" data-a="reset">Fertig</button>
@@ -763,16 +946,35 @@ class TraewellingCheckinCard extends HTMLElement {
       </div>`;
   }
 
+  _nextHint() {
+    const u = this._upcomingState()?.attributes;
+    if (!u) return "";
+    const dep = toDate(u.departure_planned);
+    return `<div class="next"><ha-icon icon="mdi:arrow-right-bottom"></ha-icon>
+      <span>Danach: <b>${esc(u.line || "Fahrt")}</b> um <b>${hhmm(dep)}</b> ab ${esc(u.origin)}${u.origin_platform ? ` · Gl. ${esc(u.origin_platform)}` : ""} → ${esc(u.destination)}</span></div>`;
+  }
+
+  _renderUpcoming() {
+    const up = this._upcomingState();
+    const a = up.attributes;
+    const dep = toDate(a.departure_real || a.departure_planned);
+    const mins = dep ? Math.max(0, Math.round((dep - new Date()) / 60000)) : null;
+    return `
+      <div class="head">
+        <ha-icon icon="mdi:clock-start"></ha-icon>
+        <span class="title grow">${mins === 0 ? "Fährt jetzt ab" : `Bald unterwegs${mins !== null ? ` · in ${mins} min` : ""}`}</span>
+        ${a.url ? `<a class="chip" href="${esc(a.url)}" target="_blank" rel="noopener">Status</a>` : ""}
+      </div>
+      <div class="pad">
+        ${tripHtml(a, { upcoming: true })}
+        <button class="chip wide" data-a="connection">
+          <ha-icon icon="mdi:plus"></ha-icon> Weitere Fahrt einchecken
+        </button>
+      </div>`;
+  }
+
   _renderCurrent() {
     const a = this._travelState()?.attributes || {};
-    const dep = toDate(a.departure_real || a.departure_planned);
-    const arr = toDate(a.arrival_real || a.arrival_planned);
-    const now = new Date();
-    let p = 0;
-    if (dep && arr && arr > dep) p = Math.max(0, Math.min(100, ((now - dep) / (arr - dep)) * 100));
-    const left = arr ? Math.max(0, Math.round((arr - now) / 60000)) : null;
-    const delay = delayMin(a.arrival_planned, a.arrival_real);
-    const [bg, fg] = lineColor({ product: a.category });
     return `
       <div class="head">
         <ha-icon icon="mdi:train"></ha-icon>
@@ -780,16 +982,11 @@ class TraewellingCheckinCard extends HTMLElement {
         ${a.url ? `<a class="chip" href="${esc(a.url)}" target="_blank" rel="noopener">Status</a>` : ""}
       </div>
       <div class="pad">
-        <div class="summary">
-          <span class="badge" style="background:${bg};color:${fg}">${esc(a.line || "Fahrt")}</span>
-          <div class="route">
-            <div><b>${hhmm(toDate(a.departure_planned) || dep)}</b>${delayMin(a.departure_planned, a.departure_real) > 0 ? ` <small class="late">+${delayMin(a.departure_planned, a.departure_real)}</small>` : ""} ${esc(a.origin)}${a.origin_platform ? ` <small>Gl. ${esc(a.origin_platform)}</small>` : ""}</div>
-            <div class="line-v"></div>
-            <div><b>${hhmm(toDate(a.arrival_planned) || arr)}</b>${delay > 0 ? ` <small class="late">+${delay}</small>` : ""} ${esc(a.destination)}${a.destination_platform ? ` <small>Gl. ${esc(a.destination_platform)}</small>` : ""}</div>
-          </div>
-        </div>
-        <div class="bar"><div style="width:${p.toFixed(1)}%"></div></div>
-        <div class="sub">${Math.round(p)} % · ${left !== null ? `noch ${left} min` : ""}${a.distance_km ? ` · ${esc(a.distance_km)} km` : ""}${a.points ? ` · ${esc(a.points)} Punkte` : ""}</div>
+        ${tripHtml(a)}
+        ${this._nextHint()}
+        <button class="chip wide" data-a="connection">
+          <ha-icon icon="mdi:swap-horizontal"></ha-icon> Anschluss einchecken
+        </button>
       </div>`;
   }
 }
@@ -846,6 +1043,33 @@ const STYLE = `<style>
   .primary { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; margin-top: 16px; padding: 13px; border-radius: 12px; background: var(--primary-color); color: var(--text-primary-color, #fff); font-weight: 600; font-size: 1.05em; }
   .bar { height: 10px; margin-top: 14px; border-radius: 5px; background: var(--secondary-background-color); overflow: hidden; }
   .bar > div { height: 100%; border-radius: 5px; background: var(--primary-color); transition: width .6s; }
+  .trip { position: relative; padding: 14px 14px 12px; border-radius: 14px; background: var(--secondary-background-color); overflow: hidden; }
+  .trip::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 4px; background: var(--line); }
+  .trip-top { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .trip .badge { background: var(--line); color: var(--line-fg); }
+  .dir { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--secondary-text-color); font-size: .88em; font-style: italic; }
+  .pill { flex: none; padding: 2px 8px; border-radius: 10px; font-size: .78em; font-weight: 600; }
+  .pill.ok { background: rgba(67, 160, 71, .16); color: var(--success-color, #43a047); }
+  .pill.late { background: rgba(219, 68, 55, .16); color: var(--error-color, #db4437); }
+  .pill.soon { background: rgba(3, 169, 244, .16); color: var(--primary-color); }
+  .stops { position: relative; margin: 12px 0 4px; }
+  .stops::before { content: ""; position: absolute; left: 5px; top: 12px; bottom: 12px; width: 2px; border-radius: 1px; background: var(--line); opacity: .55; }
+  .stop { position: relative; display: flex; align-items: baseline; gap: 8px; padding: 3px 0 3px 22px; min-width: 0; }
+  .stop + .stop { margin-top: 6px; }
+  .stop .dot { position: absolute; left: 0; top: 50%; width: 12px; height: 12px; margin-top: -6px; border-radius: 50%; background: var(--card-background-color, #1c1c1c); border: 3px solid var(--line); box-sizing: border-box; }
+  .stop.to .dot { background: var(--line); }
+  .stop .t { font-weight: 700; font-size: 1.05em; font-variant-numeric: tabular-nums; }
+  .stop .d { color: var(--error-color, #db4437); font-size: .8em; font-weight: 600; }
+  .stop .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stop .plat { flex: none; padding: 1px 6px; border-radius: 6px; border: 1px solid var(--divider-color); color: var(--secondary-text-color); font-size: .78em; }
+  .progress { position: relative; height: 8px; margin: 18px 12px 8px 0; border-radius: 4px; background: rgba(127, 127, 127, .22); }
+  .progress .fill { height: 100%; border-radius: 4px; background: var(--line); transition: width .6s; }
+  .progress .knob { position: absolute; top: 50%; width: 26px; height: 26px; margin: -13px 0 0 -13px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--line); color: var(--line-fg); box-shadow: 0 0 0 3px var(--secondary-background-color); transition: left .6s; }
+  .progress .knob ha-icon { --mdc-icon-size: 16px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--secondary-text-color); font-size: .85em; }
+  .meta span:first-child { color: var(--primary-text-color); font-weight: 600; }
+  .next { display: flex; gap: 8px; align-items: flex-start; margin-top: 10px; padding: 10px 12px; border-radius: 10px; background: var(--secondary-background-color); font-size: .92em; }
+  .next ha-icon { --mdc-icon-size: 18px; color: var(--primary-color); flex: none; }
   .done { text-align: center; padding: 24px 16px; }
   .done .big { font-size: 42px; }
   .done .pts { margin-top: 4px; font-size: 1.2em; font-weight: 700; color: var(--primary-color); }
@@ -866,4 +1090,492 @@ if (!customElements.get("traewelling-checkin-card")) {
     preview: false,
   });
   console.info(`%c TRÄWELLING-CHECKIN-CARD %c ${VERSION} `, "background:#c72730;color:#fff", "background:#333;color:#fff");
+}
+
+/* ---------------------------------------------------------------------- */
+/* Freunde unterwegs                                                      */
+/* ---------------------------------------------------------------------- */
+/*
+ *   type: custom:traewelling-friends-card
+ *   # optional:
+ *   entity: sensor.trawelling_xyz_freunde_unterwegs
+ *   empty_text: Gerade ist niemand unterwegs.
+ */
+class TraewellingFriendsCard extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+  }
+
+  setConfig(config) {
+    this._config = { empty_text: "Gerade ist niemand unterwegs.", ...(config || {}) };
+    if (this._hass) this._render();
+  }
+
+  static getStubConfig() {
+    return {};
+  }
+
+  getCardSize() {
+    return 3 + 3 * this._trips().length;
+  }
+
+  getGridOptions() {
+    return { columns: 12, min_columns: 6 };
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    const key = JSON.stringify(this._trips());
+    if (key !== this._lastKey) {
+      this._lastKey = key;
+      this._render();
+    }
+  }
+
+  connectedCallback() {
+    this._tick = setInterval(() => this._render(), 30000);
+  }
+
+  disconnectedCallback() {
+    clearInterval(this._tick);
+  }
+
+  _entityId() {
+    if (this._config?.entity) return this._config.entity;
+    const hass = this._hass;
+    const own = Object.values(hass?.entities || {})
+      .filter((e) => e.platform === DOMAIN && e.entity_id.startsWith("sensor."))
+      .map((e) => e.entity_id);
+    const all = Object.keys(hass?.states || {}).filter((id) => id.startsWith("sensor."));
+    for (const ids of [own, all]) {
+      const hit =
+        ids.find((id) => /freunde_unterwegs$/.test(id)) ||
+        ids.find((id) => Array.isArray(hass.states[id]?.attributes?.trips) && /tra?e?welling/.test(id));
+      if (hit) return hit;
+    }
+    return undefined;
+  }
+
+  _trips() {
+    const id = this._entityId();
+    const trips = id ? this._hass?.states[id]?.attributes?.trips : null;
+    return Array.isArray(trips) ? trips : [];
+  }
+
+  _render() {
+    if (!this._hass || !this._config) return;
+    const trips = this._trips();
+    const initials = (n) =>
+      String(n || "?")
+        .split(/\s+/)
+        .map((x) => x[0])
+        .join("")
+        .slice(0, 2)
+        .toUpperCase();
+    const body = trips.length
+      ? trips
+          .map((t) => {
+            const profile = t.profile_url || (t.username ? `https://traewelling.de/@${t.username}` : null);
+            const avatar = t.avatar
+              ? `<img class="avatar" src="${esc(t.avatar)}" alt="" loading="lazy">`
+              : `<span class="avatar initials">${esc(initials(t.name))}</span>`;
+            const who = `${avatar}<span class="names"><span class="title">${esc(t.name)}</span>${
+              t.username ? `<small>@${esc(t.username)}</small>` : ""
+            }</span>`;
+            return `
+            <div class="friend">
+              <div class="head">
+                ${profile ? `<a class="who grow" href="${esc(profile)}" target="_blank" rel="noopener">${who}</a>` : `<span class="who grow">${who}</span>`}
+                ${t.url ? `<a class="chip" href="${esc(t.url)}" target="_blank" rel="noopener">Status</a>` : ""}
+              </div>
+              <div class="pad">${tripHtml({ ...t, points: null })}</div>
+            </div>`;
+          })
+          .join("")
+      : `<div class="empty"><ha-icon icon="mdi:sofa-outline"></ha-icon><span>${esc(this._config.empty_text)}</span></div>`;
+    this.shadowRoot.innerHTML = `${STYLE}${FRIENDS_STYLE}<ha-card>${body}</ha-card>`;
+  }
+}
+
+const FRIENDS_STYLE = `<style>
+  .friend + .friend { border-top: 1px solid var(--divider-color); }
+  .friend .pad { padding-top: 4px; }
+  .who { display: flex; align-items: center; gap: 12px; min-width: 0; color: var(--primary-text-color); text-decoration: none; }
+  .names { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
+  .names .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .names small { color: var(--secondary-text-color); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .avatar { width: 38px; height: 38px; border-radius: 50%; object-fit: cover; flex: none; background: var(--secondary-background-color); }
+  .avatar.initials { display: flex; align-items: center; justify-content: center; background: var(--primary-color); color: var(--text-primary-color, #fff); font-weight: 700; font-size: .9em; }
+  .empty { display: flex; align-items: center; gap: 12px; padding: 18px 16px; color: var(--secondary-text-color); }
+  .empty ha-icon { color: var(--secondary-text-color); }
+</style>`;
+
+if (!customElements.get("traewelling-friends-card")) {
+  customElements.define("traewelling-friends-card", TraewellingFriendsCard);
+  window.customCards = window.customCards || [];
+  window.customCards.push({
+    type: "traewelling-friends-card",
+    name: "Träwelling Freunde unterwegs",
+    description: "Laufende Fahrten der Leute, denen du folgst",
+    preview: false,
+  });
+}
+
+/* ---------------------------------------------------------------------- */
+/* Statistik                                                              */
+/* ---------------------------------------------------------------------- */
+/*
+ *   type: custom:traewelling-stats-card
+ *   # optional:
+ *   title: Statistik
+ *   show_leaderboard: true
+ *   show_favorites: true
+ *   metric: checkins            # oder km – Startansicht des Diagramms
+ */
+const MONTHS_DE = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"];
+const fmt0 = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 0 });
+
+class TraewellingStatsCard extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this._metric = null;
+    this._hover = null;
+  }
+
+  setConfig(config) {
+    this._config = {
+      title: "Statistik",
+      show_leaderboard: true,
+      show_favorites: true,
+      metric: "checkins",
+      ...(config || {}),
+    };
+    this._metric = this._metric || store.get("statsMetric", this._config.metric);
+    if (this._hass) this._render();
+  }
+
+  static getStubConfig() {
+    return {};
+  }
+
+  getCardSize() {
+    return 9;
+  }
+
+  getGridOptions() {
+    return { columns: 12, min_columns: 6 };
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    const key = JSON.stringify(this._snapshot());
+    if (key !== this._lastKey) {
+      this._lastKey = key;
+      this._render();
+    }
+  }
+
+  _ents() {
+    if (this._entCache && this._entCacheSize === Object.keys(this._hass.states).length) return this._entCache;
+    const hass = this._hass;
+    const own = Object.values(hass.entities || {})
+      .filter((e) => e.platform === DOMAIN && e.entity_id.startsWith("sensor."))
+      .map((e) => e.entity_id);
+    this._entCache = own.length ? own : Object.keys(hass.states).filter((id) => /^sensor\.tra?e?welling/.test(id));
+    this._entCacheSize = Object.keys(hass.states).length;
+    return this._entCache;
+  }
+
+  _st(suffix) {
+    const id = this._ents().find((x) => x.endsWith(`_${suffix}`));
+    return id ? this._hass.states[id] : undefined;
+  }
+
+  _num(suffix) {
+    const v = parseFloat(this._st(suffix)?.state);
+    return Number.isFinite(v) ? v : null;
+  }
+
+  _snapshot() {
+    const keys = [
+      "check_ins_diese_woche", "check_ins_diesen_monat", "check_ins_dieses_jahr", "check_ins_gesamt",
+      "distanz_diese_woche", "distanz_diesen_monat", "distanz_dieses_jahr", "distanz_gesamt",
+      "punkte_gesamt", "reisezeit_gesamt", "aktive_reisetage", "durchschnittsdistanz",
+    ];
+    return {
+      v: keys.map((k) => this._st(k)?.state),
+      m: this._st("monatsverlauf")?.attributes?.months,
+      l: this._st("langste_fahrt_dieses_jahr")?.attributes,
+      r: this._config?.show_leaderboard ? this._st("rang_unter_freunden")?.attributes?.leaderboard : null,
+      f: this._config?.show_favorites
+        ? ["lieblingsstation", "lieblingslinie", "lieblingsstrecke"].map((k) => this._st(k)?.attributes?.top)
+        : null,
+    };
+  }
+
+  _n(v) {
+    return v === null || v === undefined ? "–" : fmt0.format(v);
+  }
+
+  _chart(months) {
+    const metric = this._metric === "km" ? "km" : "checkins";
+    const vals = months.map((m) => (typeof m[metric] === "number" ? m[metric] : null));
+    const max = Math.max(1, ...vals.filter((v) => v !== null));
+    // „schöne" Skala: 0, ½, 1 × gerundetes Maximum
+    const mag = Math.pow(10, Math.floor(Math.log10(max)));
+    const top = Math.ceil(max / mag) * mag;
+    const W = 420, H = 180, padL = 32, padR = 4, padT = 20, padB = 22;
+    const cw = (W - padL - padR) / months.length;
+    const bw = Math.max(6, cw - 6);
+    const y = (v) => padT + (H - padT - padB) * (1 - v / top);
+    const maxIdx = vals.indexOf(Math.max(...vals.filter((v) => v !== null)));
+    const unit = metric === "km" ? " km" : "";
+
+    const grid = [0, top / 2, top]
+      .map(
+        (g) => `<line class="grid" x1="${padL}" x2="${W - padR}" y1="${y(g)}" y2="${y(g)}"></line>
+                <text class="axis" x="${padL - 6}" y="${y(g) + 4}" text-anchor="end">${fmt0.format(g)}</text>`
+      )
+      .join("");
+
+    const bars = months
+      .map((m, i) => {
+        const v = vals[i];
+        const x = padL + i * cw + (cw - bw) / 2;
+        const label = MONTHS_DE[parseInt(m.month.slice(5, 7), 10) - 1] || m.month;
+        let bar = "";
+        if (v !== null && v > 0) {
+          const h = Math.max(2, H - padB - y(v));
+          const r = Math.min(4, bw / 2, h);
+          const yt = H - padB - h;
+          bar = `<path class="bar ${m.current ? "cur" : ""} ${this._hover === i ? "hot" : ""}"
+            d="M${x},${H - padB} V${yt + r} Q${x},${yt} ${x + r},${yt} H${x + bw - r} Q${x + bw},${yt} ${x + bw},${yt + r} V${H - padB} Z"></path>`;
+        }
+        const showVal = v !== null && (m.current || i === maxIdx || this._hover === i);
+        return `${bar}
+          ${showVal ? `<text class="val" x="${x + bw / 2}" y="${(v > 0 ? y(v) : H - padB) - 6}" text-anchor="middle">${fmt0.format(v)}</text>` : ""}
+          <text class="axis ${m.current ? "cur" : ""}" x="${x + bw / 2}" y="${H - 6}" text-anchor="middle">${label}</text>
+          <rect class="hit" data-i="${i}" x="${padL + i * cw}" y="0" width="${cw}" height="${H}">
+            <title>${label} ${m.month.slice(0, 4)}: ${v === null ? "keine Daten" : fmt0.format(v) + unit}</title></rect>`;
+      })
+      .join("");
+
+    const hv = this._hover !== null ? months[this._hover] : null;
+    const tip = hv
+      ? `${MONTHS_DE[parseInt(hv.month.slice(5, 7), 10) - 1]} ${hv.month.slice(0, 4)} · <b>${this._n(hv.checkins)}</b> Check-ins · <b>${this._n(hv.km)}</b> km`
+      : `Letzte 12 Monate · ${metric === "km" ? "Kilometer" : "Check-ins"} pro Monat`;
+
+    return `
+      <div class="chart-head">
+        <span class="tip">${tip}</span>
+        <div class="seg" role="tablist">
+          <button role="tab" class="${metric === "checkins" ? "on" : ""}" data-metric="checkins">Check-ins</button>
+          <button role="tab" class="${metric === "km" ? "on" : ""}" data-metric="km">km</button>
+        </div>
+      </div>
+      <svg class="chart" viewBox="0 0 ${W} ${H}" role="img"
+           aria-label="${metric === "km" ? "Kilometer" : "Check-ins"} pro Monat, letzte 12 Monate">
+        ${grid}<line class="base" x1="${padL}" x2="${W - padR}" y1="${H - padB}" y2="${H - padB}"></line>${bars}
+      </svg>`;
+  }
+
+  _render() {
+    if (!this._hass || !this._config) return;
+    const kpi = (label, c, km) => `
+      <div class="kpi">
+        <span class="k-label">${label}</span>
+        <span class="k-val">${this._n(this._num(c))}</span>
+        <span class="k-sub">${this._n(this._num(km))} km</span>
+      </div>`;
+    const months = this._st("monatsverlauf")?.attributes?.months;
+    const longest = this._st("langste_fahrt_dieses_jahr");
+    const lr = longest?.attributes || {};
+    const board = this._config.show_leaderboard ? this._st("rang_unter_freunden")?.attributes?.leaderboard : null;
+
+    const facts = [
+      ["mdi:star-four-points", this._n(this._num("punkte_gesamt")), "Punkte"],
+      ["mdi:timer-outline", this._n(this._num("reisezeit_gesamt")), "Std. unterwegs"],
+      ["mdi:calendar-check", this._n(this._num("aktive_reisetage")), "Reisetage"],
+      ["mdi:map-marker-distance", this._n(this._num("durchschnittsdistanz")), "km Ø pro Fahrt"],
+    ]
+      .map(([i, v, l]) => `<div class="fact"><ha-icon icon="${i}"></ha-icon><b>${v}</b><span>${l}</span></div>`)
+      .join("");
+
+    const longestHtml =
+      lr.origin && longest
+        ? `<a class="longest" ${lr.url ? `href="${esc(lr.url)}" target="_blank" rel="noopener"` : ""}>
+            <ha-icon icon="mdi:trophy"></ha-icon>
+            <span class="grow"><small>Längste Fahrt ${new Date().getFullYear()}</small>
+              <span>${esc(lr.line || "")} ${esc(lr.origin)} → ${esc(lr.destination)}</span></span>
+            <b>${this._n(parseFloat(longest.state))} km</b></a>`
+        : "";
+
+    const medal = (r) => (r === 1 ? "🥇" : r === 2 ? "🥈" : r === 3 ? "🥉" : r);
+    const boardHtml =
+      Array.isArray(board) && board.length
+        ? `<div class="sec-title"><ha-icon icon="mdi:podium"></ha-icon> Freunde · letzte 7 Tage</div>
+           <div class="board">${board
+             .slice(0, 5)
+             .map(
+               (p) => `
+              <a class="brow ${p.me ? "me" : ""}" ${!p.me && p.username ? `href="https://traewelling.de/@${esc(p.username)}" target="_blank" rel="noopener"` : ""}>
+                <span class="rank">${medal(p.rank)}</span>
+                <span class="grow">${esc(p.name)}${p.me ? " <small>(du)</small>" : ""}</span>
+                <span class="pts">${this._n(p.points)} P</span>
+                <span class="bkm">${this._n(p.distance_km)} km</span>
+              </a>`
+             )
+             .join("")}</div>`
+        : "";
+
+    const favList = (suffix, icon, title, label) => {
+      const top = this._st(suffix)?.attributes?.top;
+      if (!Array.isArray(top) || !top.length) return "";
+      const maxCount = Math.max(1, ...top.map((x) => x.count || 0));
+      return `<div class="fav">
+          <div class="fav-title"><ha-icon icon="${icon}"></ha-icon>${title}</div>
+          ${top
+            .slice(0, 3)
+            .map(
+              (x) => `<div class="fav-row">
+                <span class="fav-name">${esc(label(x))}</span>
+                <span class="fav-count">${this._n(x.count)}×</span>
+                <span class="fav-bar"><span style="width:${((x.count || 0) / maxCount) * 100}%"></span></span>
+              </div>`
+            )
+            .join("")}
+        </div>`;
+    };
+    const favs = this._config.show_favorites
+      ? [
+          favList("lieblingsstation", "mdi:bank", "Stationen", (x) => x.name),
+          favList("lieblingslinie", "mdi:train-variant", "Linien", (x) =>
+            /^\d+$/.test(String(x.linename)) ? `Linie ${x.linename}` : x.linename
+          ),
+          favList("lieblingsstrecke", "mdi:swap-horizontal", "Strecken", (x) => `${x.origin} → ${x.destination}`),
+        ].join("")
+      : "";
+    const favHtml = favs
+      ? `<div class="sec-title"><ha-icon icon="mdi:heart"></ha-icon> Favoriten ${new Date().getFullYear()}</div><div class="favs">${favs}</div>`
+      : "";
+
+    this.shadowRoot.innerHTML = `${STYLE}${STATS_STYLE}<ha-card>
+      <div class="head">
+        <ha-icon icon="mdi:chart-bar"></ha-icon>
+        <span class="title grow">${esc(this._config.title)}</span>
+        <a class="chip" href="https://traewelling.de/statistics" target="_blank" rel="noopener">traewelling.de <ha-icon icon="mdi:open-in-new"></ha-icon></a>
+      </div>
+      <div class="pad">
+        <div class="kpis">
+          ${kpi("Woche", "check_ins_diese_woche", "distanz_diese_woche")}
+          ${kpi("Monat", "check_ins_diesen_monat", "distanz_diesen_monat")}
+          ${kpi("Jahr", "check_ins_dieses_jahr", "distanz_dieses_jahr")}
+          ${kpi("Gesamt", "check_ins_gesamt", "distanz_gesamt")}
+        </div>
+        <div class="facts">${facts}</div>
+        ${Array.isArray(months) && months.length ? this._chart(months) : `<div class="hint">Monatsverlauf wird geladen …</div>`}
+        ${longestHtml}
+        ${favHtml}
+        ${boardHtml}
+      </div>
+    </ha-card>`;
+    this._wire();
+  }
+
+  _wire() {
+    const root = this.shadowRoot;
+    root.querySelectorAll("[data-metric]").forEach((b) =>
+      b.addEventListener("click", () => {
+        this._metric = b.dataset.metric;
+        store.set("statsMetric", this._metric);
+        this._render();
+      })
+    );
+    root.querySelectorAll("rect.hit").forEach((r) => {
+      const i = Number(r.dataset.i);
+      const on = () => {
+        if (this._hover !== i) {
+          this._hover = i;
+          this._render();
+        }
+      };
+      r.addEventListener("pointerenter", on);
+      r.addEventListener("click", on);
+    });
+    const svg = root.querySelector("svg.chart");
+    if (svg)
+      svg.addEventListener("pointerleave", () => {
+        if (this._hover !== null) {
+          this._hover = null;
+          this._render();
+        }
+      });
+  }
+}
+
+const STATS_STYLE = `<style>
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .kpi { display: flex; flex-direction: column; gap: 2px; padding: 10px 10px 9px; border-radius: 12px; background: var(--secondary-background-color); min-width: 0; }
+  .k-label { font-size: .75em; text-transform: uppercase; letter-spacing: .06em; color: var(--secondary-text-color); }
+  .k-val { font-size: 1.6em; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+  .k-sub { font-size: .8em; color: var(--secondary-text-color); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .facts { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px 12px; margin: 12px 2px 4px; }
+  .fact { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: .9em; }
+  .fact ha-icon { --mdc-icon-size: 18px; color: var(--primary-color); flex: none; }
+  .fact span { color: var(--secondary-text-color); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chart-head { display: flex; align-items: center; gap: 10px; margin: 14px 0 4px; }
+  .chart-head .tip { flex: 1; min-width: 0; font-size: .85em; color: var(--secondary-text-color); }
+  .chart-head .tip b { color: var(--primary-text-color); }
+  .seg { display: inline-flex; padding: 2px; border-radius: 10px; background: var(--secondary-background-color); flex: none; }
+  .seg button { padding: 5px 10px; border-radius: 8px; font-size: .82em; color: var(--secondary-text-color); }
+  .seg button.on { background: var(--card-background-color, #1c1c1c); color: var(--primary-text-color); box-shadow: 0 1px 2px rgba(0,0,0,.25); }
+  svg.chart { display: block; width: 100%; height: auto; overflow: visible; touch-action: pan-y; }
+  .chart .grid { stroke: var(--divider-color); stroke-width: 1; stroke-dasharray: 2 4; }
+  .chart .base { stroke: var(--divider-color); stroke-width: 1; }
+  .chart .axis { fill: var(--secondary-text-color); font-size: 11px; }
+  .chart .axis.cur { fill: var(--primary-text-color); font-weight: 700; }
+  .chart .val { fill: var(--primary-text-color); font-size: 11px; font-weight: 700; }
+  .chart .bar { fill: var(--primary-color); opacity: .45; transition: opacity .2s; }
+  .chart .bar.cur, .chart .bar.hot { opacity: 1; }
+  .chart .hit { fill: transparent; cursor: pointer; }
+  .longest { display: flex; align-items: center; gap: 12px; margin-top: 12px; padding: 10px 12px; border-radius: 12px; background: var(--secondary-background-color); color: var(--primary-text-color); text-decoration: none; }
+  .longest ha-icon { color: #f6b400; flex: none; }
+  .longest .grow { display: flex; flex-direction: column; min-width: 0; }
+  .longest .grow span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .longest small { color: var(--secondary-text-color); }
+  .longest b { flex: none; font-variant-numeric: tabular-nums; }
+  .sec-title { display: flex; align-items: center; gap: 8px; margin: 16px 0 6px; font-size: .85em; font-weight: 600; color: var(--secondary-text-color); }
+  .sec-title ha-icon { --mdc-icon-size: 18px; color: var(--primary-color); }
+  .board { display: flex; flex-direction: column; }
+  .brow { display: flex; align-items: center; gap: 10px; padding: 7px 4px; border-top: 1px solid var(--divider-color); color: var(--primary-text-color); text-decoration: none; font-variant-numeric: tabular-nums; }
+  .brow:first-child { border-top: 0; }
+  .brow.me { font-weight: 700; }
+  .brow small { color: var(--secondary-text-color); font-weight: 400; }
+  .rank { width: 24px; text-align: center; flex: none; }
+  .pts { flex: none; min-width: 52px; text-align: right; }
+  .bkm { flex: none; min-width: 64px; text-align: right; color: var(--secondary-text-color); }
+  .chip ha-icon { --mdc-icon-size: 14px; }
+  .favs { display: grid; gap: 10px; }
+  .fav { padding: 10px 12px; border-radius: 12px; background: var(--secondary-background-color); }
+  .fav-title { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; font-size: .8em; text-transform: uppercase; letter-spacing: .06em; color: var(--secondary-text-color); }
+  .fav-title ha-icon { --mdc-icon-size: 16px; color: var(--primary-color); }
+  .fav-row { display: grid; grid-template-columns: 1fr auto; align-items: center; column-gap: 10px; padding: 4px 0; }
+  .fav-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fav-count { font-variant-numeric: tabular-nums; color: var(--secondary-text-color); font-size: .9em; }
+  .fav-bar { grid-column: 1 / -1; height: 4px; margin-top: 4px; border-radius: 2px; background: rgba(127, 127, 127, .18); overflow: hidden; }
+  .fav-bar span { display: block; height: 100%; border-radius: 2px; background: var(--primary-color); opacity: .7; }
+  @media (max-width: 460px) { .kpis { grid-template-columns: repeat(2, 1fr); } }
+</style>`;
+
+if (!customElements.get("traewelling-stats-card")) {
+  customElements.define("traewelling-stats-card", TraewellingStatsCard);
+  window.customCards = window.customCards || [];
+  window.customCards.push({
+    type: "traewelling-stats-card",
+    name: "Träwelling Statistik",
+    description: "Kennzahlen, Monatsdiagramm und Freunde-Rangliste",
+    preview: false,
+  });
 }
