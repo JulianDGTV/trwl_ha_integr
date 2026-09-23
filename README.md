@@ -176,7 +176,14 @@ title: Statistik
 show_leaderboard: true
 show_favorites: true
 metric: checkins        # oder km – Startansicht des Diagramms
+header: true            # false = ohne eigene Kopfzeile (wenn das Dashboard Überschriften hat)
+show: [kpis, chart]     # nur bestimmte Bausteine, Standard: alle
 ```
+
+Bausteine für `show`: `kpis`, `facts`, `chart`, `longest`, `favorites`
+(oder einzeln `fav_stations`, `fav_lines`, `fav_routes`) und `leaderboard`.
+So lässt sich die Statistik auf mehrere kleine Karten verteilen – siehe
+Dashboard-Vorlage unten.
 
 - **Kennzahlen:** Check-ins und km für Woche, Monat, Jahr und gesamt
 - **Fakten:** Punkte, Stunden unterwegs, Reisetage, Ø km pro Fahrt
@@ -210,8 +217,9 @@ data:
 
 ## 🖥️ Dashboard
 
-Drei Karten, alle von der Integration mitgeliefert: **Meine Fahrt** (Check-in-Karte),
-**Freunde unterwegs** und **Statistik** mit Monatsdiagramm und Freunde-Rangliste.
+Aufgeteilt in viele kleine Karten, die sich im Sections-Layout von selbst
+anordnen: **Meine Fahrt**, **Freunde unterwegs**, **Statistik** (Kennzahlen,
+Fakten, längste Fahrt), **Monatsverlauf**, **Favoriten** und **Freunde-Rangliste**.
 Die Karten finden die Träwelling-Entitäten automatisch.
 
 Einfügen: Dashboard bearbeiten → **„+“** (neue Ansicht) → ⋮ →
@@ -223,7 +231,7 @@ title: Träwelling
 path: traewelling
 icon: mdi:train
 type: sections
-max_columns: 3
+max_columns: 4
 sections:
   - type: grid
     cards:
@@ -248,12 +256,66 @@ sections:
     cards:
       - type: heading
         heading: Statistik
-        icon: mdi:chart-bar
+        icon: mdi:chart-box
         tap_action:
           action: url
           url_path: https://traewelling.de/statistics
       - type: custom:traewelling-stats-card
-        title: Überblick
+        header: false
+        show: kpis
+        grid_options:
+          columns: full
+      - type: custom:traewelling-stats-card
+        header: false
+        show: facts
+        grid_options:
+          columns: full
+      - type: custom:traewelling-stats-card
+        header: false
+        show: longest
+        grid_options:
+          columns: full
+
+  - type: grid
+    cards:
+      - type: heading
+        heading: Monatsverlauf
+        icon: mdi:chart-bar
+      - type: custom:traewelling-stats-card
+        header: false
+        show: chart
+        grid_options:
+          columns: full
+
+  - type: grid
+    cards:
+      - type: heading
+        heading: Favoriten
+        icon: mdi:heart
+      - type: custom:traewelling-stats-card
+        header: false
+        show: fav_stations
+        grid_options:
+          columns: 6
+      - type: custom:traewelling-stats-card
+        header: false
+        show: fav_lines
+        grid_options:
+          columns: 6
+      - type: custom:traewelling-stats-card
+        header: false
+        show: fav_routes
+        grid_options:
+          columns: full
+
+  - type: grid
+    cards:
+      - type: heading
+        heading: Freunde-Rangliste · 7 Tage
+        icon: mdi:podium
+      - type: custom:traewelling-stats-card
+        header: false
+        show: leaderboard
         grid_options:
           columns: full
 ```
@@ -339,6 +401,7 @@ logger:
 
 ## 📝 Changelog
 
+- **1.6.2** – 🧩 Statistik-Karte lässt sich in einzelne Bausteine aufteilen (`show`, `header`) · 🖥️ Dashboard-Vorlage mit vielen kleinen Karten statt einer langen
 - **1.6.1** – 📍 „Station in meiner Nähe“ erweitert den Suchradius stufenweise (400 m → 1 km → 2 km), wenn direkt am Standort nichts gefunden wird, und bietet die Treffer mit Entfernung zur Auswahl an
 - **1.6.0** – 🎨 Neues Design für eigene, bevorstehende und Freundes-Fahrten (Linienfarbe, Zeitleiste, Fortschritt mit Verkehrsmittel-Symbol, Verspätungs-Badges, Profilbilder) · 📈 Neue Statistik-Karte mit Monatsdiagramm, Kennzahlen, Favoriten und Rangliste · ⏱️ Statistik standardmäßig nur noch stündlich · 📡 Sensor „Monatsverlauf“ · 🚉 Check-in zeigt nur noch die 5 zuletzt genutzten Stationen
 - **1.5.0** – 🕐 Eingecheckte Fahrten der nächsten Stunde erscheinen als „Bald unterwegs“, während einer Fahrt als „Danach: …“ · neuer Sensor „Nächste Fahrt“ · 🧹 Favoriten-Bereich aus der Dashboard-Vorlage entfernt
