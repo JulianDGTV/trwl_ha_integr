@@ -24,7 +24,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN
+from .const import DOMAIN, STATE_IDLE, STATE_TRAVELLING, STATE_UPCOMING
 from .coordinator import TraewellingCoordinator
 from .entity import TraewellingEntity
 from .helpers import (
@@ -56,18 +56,52 @@ class TrwlSensorDescription(SensorEntityDescription):
 # --------------------------------------------------------------------------- #
 
 
-def _active(data: dict[str, Any]) -> dict[str, Any] | None:
+def _trip(data: dict[str, Any]) -> dict[str, Any] | None:
+    """Die gerade anzuzeigende Fahrt: laufend, sonst demnächst startend."""
+    status = data.get("trip")
+    if isinstance(status, dict):
+        return status
+    # Fallback, falls der Coordinator noch nichts aufgeloest hat.
     status = data.get("active")
     return status if isinstance(status, dict) else None
+
+
+def _trip_state(data: dict[str, Any]) -> str:
+    return data.get("trip_state") or (
+        STATE_TRAVELLING if isinstance(data.get("active"), dict) else STATE_IDLE
+    )
+
+
+def _is_travelling(data: dict[str, Any]) -> bool:
+    return _trip_state(data) == STATE_TRAVELLING
+
+
+def _upcoming(data: dict[str, Any]) -> list[dict[str, Any]]:
+    items = data.get("upcoming")
+    return [i for i in items if isinstance(i, dict)] if isinstance(items, list) else []
+
+
+def _minutes_until_departure(data: dict[str, Any]) -> int | None:
+    dep = departure(_trip(data))
+    if dep is None:
+        return None
+    return max(0, int((dep - dt_util.utcnow()).total_seconds() // 60))
 
 
 def _user(data: dict[str, Any]) -> dict[str, Any]:
     return data.get("user") or {}
 
 
+def _summary(data: dict[str, Any]) -> dict[str, Any]:
+    """`/statistics/overview` liefert {"summary": {...}}."""
+    stats = data.get("stats") or {}
+    summary = stats.get("summary")
+    return summary if isinstance(summary, dict) else stats
+
+
 def _progress(data: dict[str, Any]) -> float | None:
-    dep = departure(_active(data))
-    arr = arrival(_active(data))
+    dep = departure(_trip(data))
+    arr = arrival(_trip(data))
     if dep is None or arr is None or arr <= dep:
         return None
     total = (arr - dep).total_seconds()
@@ -76,14 +110,16 @@ def _progress(data: dict[str, Any]) -> float | None:
 
 
 def _minutes_left(data: dict[str, Any]) -> int | None:
-    arr = arrival(_active(data))
+    if not _is_travelling(data):
+        return None
+    arr = arrival(_trip(data))
     if arr is None:
         return None
     return max(0, int((arr - dt_util.utcnow()).total_seconds() // 60))
 
 
 def _journey_attrs(data: dict[str, Any]) -> dict[str, Any]:
-    status = _active(data)
+    status = _trip(data)
     if status is None:
         return {}
     checkin = checkin_of(status) or {}
@@ -91,7 +127,11 @@ def _journey_attrs(data: dict[str, Any]) -> dict[str, Any]:
     dest = destination_of(status) or {}
     operator = checkin.get("operator") or {}
     event = status.get("event") or {}
+    next_up = _upcoming(data)
     return {
+        "fahrtstatus": _trip_state(data),
+        "departure_in_minutes": _minutes_until_departure(data),
+        "planned_trips": len(next_up),
         "status_id": status.get("id"),
         "body": status.get("body"),
         "line": first(checkin, "lineName", "number"),
@@ -120,81 +160,76 @@ def _journey_attrs(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-CHECKIN_KEYS = ("total_checkins", "checkin_count", "checkins", "totalCheckins", "count")
-DISTANCE_KM_KEYS = ("total_distance_km", "distance_km")
-DISTANCE_M_KEYS = ("total_distance", "totalDistance", "distance")
-
-CATEGORY_LABELS = {
-    "nationalExpress": "Fernverkehr (ICE)",
-    "national": "Fernverkehr (IC/EC)",
-    "regionalExp": "Regionalexpress",
-    "regional": "Regionalverkehr",
-    "suburban": "S-Bahn",
-    "subway": "U-Bahn",
-    "tram": "Tram",
-    "bus": "Bus",
-    "ferry": "Fähre",
-    "taxi": "Taxi",
-    "plane": "Flugzeug",
-}
-PURPOSE_LABELS = {0: "Privat", 1: "Geschäftlich", 2: "Pendeln"}
-
-
-def _summary(data: dict[str, Any], source: str = "stats") -> dict[str, Any]:
-    """`summary` aus /statistics/overview (Fallback: Top-Level)."""
-    stats = data.get(source)
-    if not isinstance(stats, dict):
-        return {}
-    summary = stats.get("summary")
-    return summary if isinstance(summary, dict) else stats
-
-
-def _stat_value(data: dict[str, Any], *keys: str, source: str = "stats") -> Any:
-    return first(_summary(data, source), *keys)
-
-
-def _stat_km(data: dict[str, Any], source: str = "stats") -> float | None:
-    summary = _summary(data, source)
-    km = first(summary, *DISTANCE_KM_KEYS)
-    if isinstance(km, (int, float)):
-        return round(float(km), 1)
-    return meters_to_km(first(summary, *DISTANCE_M_KEYS))
-
-
-def _ride(status: Any) -> dict[str, Any] | None:
-    if not isinstance(status, dict):
-        return None
-    checkin = checkin_of(status) or {}
-    origin = origin_of(status) or {}
-    dest = destination_of(status) or {}
-    return {
-        "line": first(checkin, "lineName", "number"),
-        "origin": origin.get("name"),
-        "destination": dest.get("name"),
-        "distance_km": meters_to_km(checkin.get("distance")),
-        "duration_minutes": checkin.get("duration"),
-        "date": first(origin, "departurePlanned", "departure"),
-        "url": f"https://traewelling.de/status/{status['id']}" if status.get("id") else None,
-    }
-
-
 def _longest_ride_attrs(data: dict[str, Any]) -> dict[str, Any]:
+    """Laengste/kuerzeste Fahrt als StatusResource im Summary."""
     summary = _summary(data)
     out: dict[str, Any] = {}
-    for label, key in (
-        ("longest_by_distance", "longest_checkin_by_distance"),
-        ("shortest_by_distance", "shortest_checkin_by_distance"),
-        ("longest_by_duration", "longest_checkin_by_duration"),
-        ("shortest_by_duration", "shortest_checkin_by_duration"),
+    for label, keys in (
+        ("longest_by_distance", ("longest_checkin_by_distance", "longest_ride")),
+        ("shortest_by_distance", ("shortest_checkin_by_distance", "shortest_ride")),
+        ("longest_by_duration", ("longest_checkin_by_duration",)),
+        ("shortest_by_duration", ("shortest_checkin_by_duration",)),
     ):
-        ride = _ride(summary.get(key))
-        if ride:
-            out[label] = ride
+        status = first(summary, *keys)
+        if not isinstance(status, dict):
+            continue
+        checkin = checkin_of(status) or {}
+        out[label] = {
+            "line": first(checkin, "lineName", "number"),
+            "origin": (origin_of(status) or {}).get("name"),
+            "destination": (destination_of(status) or {}).get("name"),
+            "distance_km": meters_to_km(checkin.get("distance")),
+            "duration_minutes": checkin.get("duration"),
+            "date": first(origin_of(status) or {}, "departurePlanned", "departure"),
+        }
     return out
 
 
-def _longest_year(data: dict[str, Any]) -> dict[str, Any] | None:
-    return _ride(_summary(data, "stats_year").get("longest_checkin_by_distance"))
+def _favorites(data: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    favorites = data.get("favorites") or {}
+    items = favorites.get(key)
+    return [i for i in items if isinstance(i, dict)] if isinstance(items, list) else []
+
+
+def _top_name(data: dict[str, Any], key: str, *name_keys: str) -> str | None:
+    items = _favorites(data, key)
+    if not items:
+        return None
+    return first(items[0], *name_keys)
+
+
+def _route_label(item: dict[str, Any] | None) -> str | None:
+    """Routen haben kein Namensfeld, nur origin und destination."""
+    if not isinstance(item, dict):
+        return None
+    origin = item.get("origin")
+    destination = item.get("destination")
+    if origin and destination:
+        return f"{origin} \u2192 {destination}"
+    return origin or destination
+
+
+def _top_route(data: dict[str, Any]) -> str | None:
+    items = _favorites(data, "routes")
+    return _route_label(items[0]) if items else None
+
+
+def _top_attrs(data: dict[str, Any], key: str) -> dict[str, Any]:
+    """Top 10 als Attribut, plus Anzahl und Distanz des Spitzenreiters."""
+    items = _favorites(data, key)
+    if not items:
+        return {}
+    top = items[0]
+    out: dict[str, Any] = {"top10": items[:10], "count": top.get("count")}
+    if key == "routes":
+        out["top10"] = [
+            {**item, "label": _route_label(item)} for item in items[:10]
+        ]
+        out["origin"] = top.get("origin")
+        out["destination"] = top.get("destination")
+    if top.get("distance_km") is not None:
+        out["distance_km"] = top["distance_km"]
+    return out
 
 
 def _month_key() -> str:
@@ -210,145 +245,92 @@ def _history(data: dict[str, Any]) -> dict[str, Any] | None:
     return history if isinstance(history, dict) else None
 
 
-def _period_count(data: dict[str, Any], source: str, group: str, key: str) -> Any:
-    value = _stat_value(data, *CHECKIN_KEYS, source=source)
-    if isinstance(value, (int, float)):
-        return int(value)
-    return history_count(history_entry(_history(data), group, key))
-
-
-def _period_distance(data: dict[str, Any], source: str, group: str, key: str) -> Any:
-    value = _stat_km(data, source)
-    if value is not None:
-        return value
-    return history_distance_km(history_entry(_history(data), group, key))
-
-
-def _fav(data: dict[str, Any], kind: str) -> list[dict[str, Any]]:
-    fav = data.get("favorites")
-    items = fav.get(kind) if isinstance(fav, dict) else None
-    return [i for i in items if isinstance(i, dict)] if isinstance(items, list) else []
-
-
-def _fav_route_label(item: dict[str, Any]) -> str:
-    return f"{item.get('origin')} → {item.get('destination')}"
-
-
-def _categories(data: dict[str, Any]) -> list[dict[str, Any]]:
-    personal = data.get("personal")
-    rows = personal.get("categories") if isinstance(personal, dict) else None
-    if not isinstance(rows, list):
-        return []
-    out = [
-        {
-            "name": CATEGORY_LABELS.get(str(r.get("name")), r.get("name")),
-            "key": r.get("name"),
-            "count": r.get("count"),
-            "hours": minutes_to_hours(r.get("duration")),
-        }
-        for r in rows
-        if isinstance(r, dict)
-    ]
-    return sorted(out, key=lambda r: r.get("count") or 0, reverse=True)
-
-
-def _operators(data: dict[str, Any]) -> list[dict[str, Any]]:
-    personal = data.get("personal")
-    rows = personal.get("operators") if isinstance(personal, dict) else None
-    if not isinstance(rows, list):
-        return []
-    out = [
-        {"name": r.get("name"), "count": r.get("count"), "hours": minutes_to_hours(r.get("duration"))}
-        for r in rows
-        if isinstance(r, dict)
-    ]
-    return sorted(out, key=lambda r: r.get("count") or 0, reverse=True)
-
-
-def _purposes(data: dict[str, Any]) -> list[dict[str, Any]]:
-    personal = data.get("personal")
-    rows = personal.get("purpose") if isinstance(personal, dict) else None
-    if not isinstance(rows, list):
-        return []
-    return [
-        {
-            "name": PURPOSE_LABELS.get(r.get("reason"), str(r.get("reason"))),
-            "count": r.get("count"),
-            "hours": minutes_to_hours(r.get("duration")),
-        }
-        for r in rows
-        if isinstance(r, dict)
-    ]
-
-
-def _leaderboard(data: dict[str, Any]) -> list[dict[str, Any]]:
-    rows = data.get("leaderboard")
-    if not isinstance(rows, list):
-        return []
-    me = _user(data)
-    my_ids = {str(v) for v in (me.get("id"), me.get("uuid")) if v is not None}
-    out = []
-    for i, r in enumerate(rows):
-        if not isinstance(r, dict):
-            continue
-        user = r.get("user") or {}
-        out.append(
-            {
-                "rank": i + 1,
-                "name": first(user, "displayName", "username", default="?"),
-                "username": user.get("username"),
-                "points": r.get("points"),
-                "distance_km": meters_to_km(r.get("totalDistance")),
-                "hours": minutes_to_hours(r.get("totalDuration")),
-                "me": str(user.get("id")) in my_ids
-                or (bool(me.get("username")) and user.get("username") == me.get("username")),
-            }
-        )
-    return out
-
-
-def _my_rank(data: dict[str, Any]) -> int | None:
-    return next((r["rank"] for r in _leaderboard(data) if r["me"]), None)
-
-
 # --------------------------------------------------------------------------- #
 # Sensordefinitionen
 # --------------------------------------------------------------------------- #
 
+def _next_planned(data: dict[str, Any]) -> dict[str, Any] | None:
+    """Nächste geplante Fahrt – unabhängig vom Vorschaufenster."""
+    items = _upcoming(data)
+    return items[0] if items else None
+
+
+def _planned_attrs(data: dict[str, Any]) -> dict[str, Any]:
+    out: list[dict[str, Any]] = []
+    for status in _upcoming(data)[:5]:
+        checkin = checkin_of(status) or {}
+        dep = departure(status)
+        out.append(
+            {
+                "line": first(checkin, "lineName", "number"),
+                "origin": (origin_of(status) or {}).get("name"),
+                "destination": (destination_of(status) or {}).get("name"),
+                "departure": dep.isoformat() if dep else None,
+                "status_id": status.get("id"),
+            }
+        )
+    return {"trips": out, "count": len(_upcoming(data))}
+
+
 ACTIVE_SENSORS: tuple[TrwlSensorDescription, ...] = (
+    TrwlSensorDescription(
+        key="trip_state",
+        name="Fahrtstatus",
+        device_class=SensorDeviceClass.ENUM,
+        options=[STATE_TRAVELLING, STATE_UPCOMING, STATE_IDLE],
+        icon="mdi:transit-connection-variant",
+        value_fn=_trip_state,
+        attr_fn=_journey_attrs,
+    ),
+    TrwlSensorDescription(
+        key="departure_in",
+        name="Abfahrt in",
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:clock-fast",
+        value_fn=_minutes_until_departure,
+    ),
+    TrwlSensorDescription(
+        key="next_planned_departure",
+        name="Nächste geplante Fahrt",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        icon="mdi:calendar-clock",
+        value_fn=lambda d: departure(_next_planned(d)),
+        attr_fn=_planned_attrs,
+    ),
     TrwlSensorDescription(
         key="current_line",
         translation_key="current_line",
         name="Aktuelle Fahrt",
         icon="mdi:train",
-        value_fn=lambda d: first(checkin_of(_active(d)) or {}, "lineName", "number"),
+        value_fn=lambda d: first(checkin_of(_trip(d)) or {}, "lineName", "number"),
         attr_fn=_journey_attrs,
     ),
     TrwlSensorDescription(
         key="current_origin",
         name="Start",
         icon="mdi:map-marker-outline",
-        value_fn=lambda d: (origin_of(_active(d)) or {}).get("name"),
+        value_fn=lambda d: (origin_of(_trip(d)) or {}).get("name"),
     ),
     TrwlSensorDescription(
         key="current_destination",
         name="Ziel",
         icon="mdi:map-marker-check",
-        value_fn=lambda d: (destination_of(_active(d)) or {}).get("name"),
+        value_fn=lambda d: (destination_of(_trip(d)) or {}).get("name"),
     ),
     TrwlSensorDescription(
         key="current_departure",
         name="Abfahrt",
         device_class=SensorDeviceClass.TIMESTAMP,
         icon="mdi:clock-start",
-        value_fn=lambda d: departure(_active(d)),
+        value_fn=lambda d: departure(_trip(d)),
     ),
     TrwlSensorDescription(
         key="current_arrival",
         name="Ankunft",
         device_class=SensorDeviceClass.TIMESTAMP,
         icon="mdi:clock-end",
-        value_fn=lambda d: arrival(_active(d)),
+        value_fn=lambda d: arrival(_trip(d)),
     ),
     TrwlSensorDescription(
         key="current_delay_departure",
@@ -357,7 +339,7 @@ ACTIVE_SENSORS: tuple[TrwlSensorDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:clock-alert-outline",
         value_fn=lambda d: delay_minutes(
-            departure(_active(d), real=False), departure(_active(d))
+            departure(_trip(d), real=False), departure(_trip(d))
         ),
     ),
     TrwlSensorDescription(
@@ -367,7 +349,7 @@ ACTIVE_SENSORS: tuple[TrwlSensorDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:clock-alert",
         value_fn=lambda d: delay_minutes(
-            arrival(_active(d), real=False), arrival(_active(d))
+            arrival(_trip(d), real=False), arrival(_trip(d))
         ),
     ),
     TrwlSensorDescription(
@@ -392,32 +374,13 @@ ACTIVE_SENSORS: tuple[TrwlSensorDescription, ...] = (
         device_class=SensorDeviceClass.DISTANCE,
         native_unit_of_measurement=UnitOfLength.KILOMETERS,
         icon="mdi:map-marker-distance",
-        value_fn=lambda d: meters_to_km((checkin_of(_active(d)) or {}).get("distance")),
+        value_fn=lambda d: meters_to_km((checkin_of(_trip(d)) or {}).get("distance")),
     ),
     TrwlSensorDescription(
         key="current_points",
         name="Punkte aktuelle Fahrt",
         icon="mdi:star-outline",
-        value_fn=lambda d: (checkin_of(_active(d)) or {}).get("points"),
-    ),
-)
-
-def _friends(data: dict[str, Any]) -> list[dict[str, Any]]:
-    friends = data.get("friends")
-    return friends if isinstance(friends, list) else []
-
-
-FRIENDS_SENSORS: tuple[TrwlSensorDescription, ...] = (
-    TrwlSensorDescription(
-        key="friends_travelling",
-        name="Freunde unterwegs",
-        icon="mdi:account-group",
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: len(_friends(d)),
-        attr_fn=lambda d: {
-            "trips": _friends(d),
-            "names": [t.get("name") for t in _friends(d)],
-        },
+        value_fn=lambda d: (checkin_of(_trip(d)) or {}).get("points"),
     ),
 )
 
@@ -436,8 +399,18 @@ STATS_SENSORS: tuple[TrwlSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfLength.KILOMETERS,
         state_class=SensorStateClass.TOTAL_INCREASING,
         icon="mdi:map-marker-distance",
-        value_fn=lambda d: meters_to_km(first(_user(d), "totalDistance", "trainDistance"))
-        or _stat_km(d),
+        # total_distance_km kommt bereits in Kilometern, das Profil in Metern.
+        value_fn=lambda d: _summary(d).get("total_distance_km")
+        or meters_to_km(first(_user(d), "totalDistance", "trainDistance")),
+    ),
+    TrwlSensorDescription(
+        key="distance_mean",
+        name="Distanz je Fahrt",
+        device_class=SensorDeviceClass.DISTANCE,
+        native_unit_of_measurement=UnitOfLength.KILOMETERS,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:chart-bell-curve",
+        value_fn=lambda d: _summary(d).get("mean_distance_km"),
     ),
     TrwlSensorDescription(
         key="duration_total",
@@ -445,14 +418,16 @@ STATS_SENSORS: tuple[TrwlSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfTime.HOURS,
         state_class=SensorStateClass.TOTAL_INCREASING,
         icon="mdi:timer-outline",
-        value_fn=lambda d: minutes_to_hours(first(_user(d), "totalDuration", "trainDuration")),
+        value_fn=lambda d: minutes_to_hours(
+            first(_user(d), "totalDuration", "trainDuration")
+        ),
     ),
     TrwlSensorDescription(
         key="checkins_total",
         name="Check-ins gesamt",
         icon="mdi:ticket-confirmation",
         state_class=SensorStateClass.TOTAL_INCREASING,
-        value_fn=lambda d: _stat_value(d, *CHECKIN_KEYS),
+        value_fn=lambda d: _summary(d).get("total_checkins"),
         attr_fn=_longest_ride_attrs,
     ),
     TrwlSensorDescription(
@@ -460,39 +435,16 @@ STATS_SENSORS: tuple[TrwlSensorDescription, ...] = (
         name="Aktive Reisetage",
         icon="mdi:calendar-check",
         state_class=SensorStateClass.TOTAL_INCREASING,
-        value_fn=lambda d: _stat_value(d, "active_days", "activeDays"),
-    ),
-    TrwlSensorDescription(
-        key="mean_distance",
-        name="Durchschnittsdistanz",
-        device_class=SensorDeviceClass.DISTANCE,
-        native_unit_of_measurement=UnitOfLength.KILOMETERS,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:ruler",
-        value_fn=lambda d: _stat_value(d, "mean_distance_km"),
-    ),
-    TrwlSensorDescription(
-        key="checkins_week",
-        name="Check-ins diese Woche",
-        icon="mdi:calendar-week",
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: _period_count(d, "stats_week", "weeks", ""),
-    ),
-    TrwlSensorDescription(
-        key="distance_week",
-        name="Distanz diese Woche",
-        device_class=SensorDeviceClass.DISTANCE,
-        native_unit_of_measurement=UnitOfLength.KILOMETERS,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:map-marker-distance",
-        value_fn=lambda d: _stat_km(d, "stats_week"),
+        value_fn=lambda d: _summary(d).get("active_days"),
     ),
     TrwlSensorDescription(
         key="checkins_month",
         name="Check-ins diesen Monat",
         icon="mdi:calendar-month",
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: _period_count(d, "stats_month", "months", _month_key()),
+        value_fn=lambda d: history_count(
+            history_entry(_history(d), "monthly", _month_key())
+        ),
     ),
     TrwlSensorDescription(
         key="distance_month",
@@ -501,14 +453,18 @@ STATS_SENSORS: tuple[TrwlSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfLength.KILOMETERS,
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:map-marker-distance",
-        value_fn=lambda d: _period_distance(d, "stats_month", "months", _month_key()),
+        value_fn=lambda d: history_distance_km(
+            history_entry(_history(d), "monthly", _month_key())
+        ),
     ),
     TrwlSensorDescription(
         key="checkins_year",
         name="Check-ins dieses Jahr",
         icon="mdi:calendar-range",
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: _period_count(d, "stats_year", "years", _year_key()),
+        value_fn=lambda d: history_count(
+            history_entry(_history(d), "yearly", _year_key())
+        ),
     ),
     TrwlSensorDescription(
         key="distance_year",
@@ -517,65 +473,30 @@ STATS_SENSORS: tuple[TrwlSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfLength.KILOMETERS,
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:map-marker-distance",
-        value_fn=lambda d: _period_distance(d, "stats_year", "years", _year_key()),
-    ),
-    TrwlSensorDescription(
-        key="longest_ride_year",
-        name="Längste Fahrt dieses Jahr",
-        device_class=SensorDeviceClass.DISTANCE,
-        native_unit_of_measurement=UnitOfLength.KILOMETERS,
-        icon="mdi:map-marker-path",
-        value_fn=lambda d: (_longest_year(d) or {}).get("distance_km"),
-        attr_fn=lambda d: _longest_year(d) or {},
+        value_fn=lambda d: history_distance_km(
+            history_entry(_history(d), "yearly", _year_key())
+        ),
     ),
     TrwlSensorDescription(
         key="favorite_station",
-        name="Lieblingsstation",
-        icon="mdi:bank",
-        value_fn=lambda d: (_fav(d, "stations")[:1] or [{}])[0].get("name"),
-        attr_fn=lambda d: {"period": "Dieses Jahr", "top": _fav(d, "stations")[:10]},
+        name="Häufigste Station",
+        icon="mdi:home-map-marker",
+        value_fn=lambda d: _top_name(d, "stations", "name"),
+        attr_fn=lambda d: _top_attrs(d, "stations"),
     ),
     TrwlSensorDescription(
         key="favorite_line",
-        name="Lieblingslinie",
-        icon="mdi:train-variant",
-        value_fn=lambda d: (_fav(d, "lines")[:1] or [{}])[0].get("linename"),
-        attr_fn=lambda d: {"period": "Dieses Jahr", "top": _fav(d, "lines")[:10]},
+        name="Häufigste Linie",
+        icon="mdi:transit-connection-variant",
+        value_fn=lambda d: _top_name(d, "lines", "linename", "lineName", "number", "name"),
+        attr_fn=lambda d: _top_attrs(d, "lines"),
     ),
     TrwlSensorDescription(
         key="favorite_route",
-        name="Lieblingsstrecke",
-        icon="mdi:swap-horizontal",
-        value_fn=lambda d: next((_fav_route_label(r) for r in _fav(d, "routes")[:1]), None),
-        attr_fn=lambda d: {
-            "period": "Dieses Jahr",
-            "top": [{**r, "label": _fav_route_label(r)} for r in _fav(d, "routes")[:10]],
-        },
-    ),
-    TrwlSensorDescription(
-        key="top_category",
-        name="Häufigstes Verkehrsmittel",
-        icon="mdi:train-bus",
-        value_fn=lambda d: (_categories(d)[:1] or [{}])[0].get("name"),
-        attr_fn=lambda d: {
-            "period": "Dieses Jahr",
-            "categories": _categories(d),
-            "operators": _operators(d)[:10],
-            "purposes": _purposes(d),
-        },
-    ),
-    TrwlSensorDescription(
-        key="friends_rank",
-        name="Rang unter Freunden",
-        icon="mdi:podium",
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=_my_rank,
-        attr_fn=lambda d: {
-            "period": "Letzte 7 Tage",
-            "participants": len(_leaderboard(d)),
-            "my_points": next((r["points"] for r in _leaderboard(d) if r["me"]), None),
-            "leaderboard": _leaderboard(d)[:10],
-        },
+        name="Häufigste Strecke",
+        icon="mdi:routes",
+        value_fn=_top_route,
+        attr_fn=lambda d: _top_attrs(d, "routes"),
     ),
     TrwlSensorDescription(
         key="username",
@@ -596,7 +517,7 @@ async def async_setup_entry(
     coordinator: TraewellingCoordinator = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
         TraewellingSensor(coordinator, description)
-        for description in (*ACTIVE_SENSORS, *FRIENDS_SENSORS, *STATS_SENSORS)
+        for description in (*ACTIVE_SENSORS, *STATS_SENSORS)
     )
 
 

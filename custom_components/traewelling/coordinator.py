@@ -15,14 +15,19 @@ from homeassistant.util import dt as dt_util
 from .api import TraewellingApi, TraewellingAuthError, TraewellingError
 from .const import (
     CONF_ACTIVE_INTERVAL,
+    CONF_LOOKAHEAD,
     CONF_STATS_FROM,
     CONF_STATS_INTERVAL,
     DEFAULT_ACTIVE_INTERVAL,
+    DEFAULT_LOOKAHEAD,
     DEFAULT_STATS_FROM,
     DEFAULT_STATS_INTERVAL,
     DOMAIN,
+    STATE_IDLE,
+    STATE_TRAVELLING,
+    STATE_UPCOMING,
 )
-from .friends import active_friend_trips
+from .helpers import departure, status_user_id
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,7 +45,11 @@ class TraewellingCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             minutes=int(options.get(CONF_STATS_INTERVAL, DEFAULT_STATS_INTERVAL))
         )
         self._stats_from: str = options.get(CONF_STATS_FROM) or DEFAULT_STATS_FROM
+        self._lookahead = max(
+            0, int(options.get(CONF_LOOKAHEAD, DEFAULT_LOOKAHEAD))
+        )
         self._last_stats: datetime | None = None
+        self._last_upcoming: datetime | None = None
 
         super().__init__(
             hass,
@@ -68,19 +77,82 @@ class TraewellingCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self._async_update_statistics(data)
             self._last_stats = now
 
-        await self._async_update_friends(data)
+        await self._async_update_upcoming(data, now)
+        self._resolve_trip(data, now)
+
         return data
 
-    async def _async_update_friends(self, data: dict[str, Any]) -> None:
-        """Laufende Fahrten gefolgter Accounts. Fehler hier sind nicht fatal."""
-        try:
-            statuses = await self.api.async_get_dashboard()
-        except TraewellingError as err:
-            # Auch Auth-Fehler nur loggen: der Rest der Integration soll weiterlaufen.
-            _LOGGER.warning("Dashboard (Freunde) konnte nicht geladen werden: %s", err)
-            data.setdefault("friends", [])
+    async def _async_update_upcoming(self, data: dict[str, Any], now: datetime) -> None:
+        """Geplante Check-ins holen (nur wenn die Vorschau gebraucht wird).
+
+        Läuft gerade eine Fahrt, reicht ein seltener Abgleich – dann zählt
+        ohnehin die laufende Fahrt. Ohne aktive Fahrt wird jedes Mal geprüft,
+        damit ein frischer Check-in sofort auftaucht.
+        """
+        if not self._lookahead:
+            data["upcoming"] = []
             return
-        data["friends"] = active_friend_trips(statuses, data.get("user"))
+
+        active = data.get("active")
+        if (
+            active
+            and self._last_upcoming is not None
+            and now - self._last_upcoming < timedelta(minutes=5)
+        ):
+            return
+
+        user = data.get("user") or {}
+        try:
+            statuses = await self.api.async_get_upcoming_statuses(
+                user_id=user.get("id"), username=user.get("username")
+            )
+        except TraewellingAuthError as err:
+            raise ConfigEntryAuthFailed(str(err)) from err
+        except TraewellingError as err:
+            _LOGGER.warning("Geplante Fahrten konnten nicht geladen werden: %s", err)
+            return
+
+        self._last_upcoming = now
+        own_id = user.get("id")
+        active_id = (active or {}).get("id")
+
+        upcoming: list[tuple[datetime, dict[str, Any]]] = []
+        for status in statuses:
+            if own_id is not None and status_user_id(status) not in (None, own_id):
+                continue  # Fahrten anderer Leute aus dem Feed aussortieren
+            if active_id is not None and status.get("id") == active_id:
+                continue
+            dep = departure(status)
+            if dep is None or dep <= now:
+                continue
+            upcoming.append((dep, status))
+
+        upcoming.sort(key=lambda item: item[0])
+        data["upcoming"] = [status for _, status in upcoming]
+
+    def _resolve_trip(self, data: dict[str, Any], now: datetime) -> None:
+        """Laufende Fahrt schlägt geplante Fahrt – immer."""
+        active = data.get("active")
+        if isinstance(active, dict):
+            data["trip"] = active
+            data["trip_state"] = STATE_TRAVELLING
+            return
+
+        window = timedelta(minutes=self._lookahead)
+        for status in data.get("upcoming") or []:
+            dep = departure(status)
+            if dep is None:
+                continue
+            if dep <= now:
+                continue
+            if self._lookahead and dep - now <= window:
+                data["trip"] = status
+                data["trip_state"] = STATE_UPCOMING
+                return
+            break  # Liste ist sortiert, alles Weitere liegt noch ferner
+
+        data["trip"] = None
+        data["trip_state"] = STATE_IDLE
 
     async def _async_update_statistics(self, data: dict[str, Any]) -> None:
         """Profil + Statistik-Endpunkte. Fehler hier sind nicht fatal."""
@@ -92,26 +164,18 @@ class TraewellingCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.warning("Profil konnte nicht geladen werden: %s", err)
 
         today = dt_util.now().date()
-        date_to = (today + timedelta(days=1)).isoformat()
-
-        month_from = today.replace(day=1).isoformat()
-        year_from = today.replace(month=1, day=1).isoformat()
-        week_from = (today - timedelta(days=today.weekday())).isoformat()
+        until = (today + timedelta(days=1)).isoformat()
 
         for key, coro in (
             (
                 "stats",
-                self.api.async_get_statistics_overview(self._stats_from, date_to),
+                self.api.async_get_statistics_overview(self._stats_from, until),
             ),
-            # Monat/Jahr ebenfalls über /statistics/overview mit passendem
-            # Zeitraum – das Format von /statistics/history ist nicht stabil.
-            ("stats_month", self.api.async_get_statistics_overview(month_from, date_to)),
-            ("stats_year", self.api.async_get_statistics_overview(year_from, date_to)),
-            ("stats_week", self.api.async_get_statistics_overview(week_from, date_to)),
             ("history", self.api.async_get_statistics_history()),
-            ("favorites", self.api.async_get_statistics_favorites(year_from, date_to)),
-            ("personal", self.api.async_get_statistics_personal(year_from, date_to)),
-            ("leaderboard", self.api.async_get_leaderboard_friends()),
+            (
+                "favorites",
+                self.api.async_get_statistics_favorites(self._stats_from, until),
+            ),
         ):
             try:
                 result = await coro
