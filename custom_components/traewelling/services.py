@@ -19,8 +19,14 @@ from homeassistant.core import (
 )
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.util import dt as dt_util
 
-from .api import TraewellingAuthError, TraewellingCheckinError, TraewellingError
+from .api import (
+    TraewellingAuthError,
+    TraewellingCheckinError,
+    TraewellingError,
+    TraewellingRateLimitError,
+)
 from .const import DOMAIN
 from .coordinator import TraewellingCoordinator
 from .helpers import first
@@ -77,6 +83,13 @@ CHECKIN_SCHEMA = vol.Schema(
         vol.Optional("visibility", default="public"): vol.In(list(VISIBILITY)),
         vol.Optional("business", default="private"): vol.In(list(BUSINESS)),
         vol.Optional("toot", default=False): cv.boolean,
+        vol.Optional("ticket_id"): vol.Any(None, cv.string),
+    }
+)
+TICKETS_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_ENTRY): cv.string,
+        vol.Optional("date"): cv.string,  # YYYY-MM-DD, Standard: heute
     }
 )
 
@@ -120,6 +133,18 @@ def _departure(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _ticket(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict) or not raw.get("id"):
+        return None
+    return {
+        "id": raw.get("id"),
+        "name": raw.get("name"),
+        "valid_from": raw.get("validFrom"),
+        "valid_until": raw.get("validUntil"),
+        "trip_count": raw.get("tripCount"),
+    }
+
+
 def _stop(raw: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": raw.get("id"),
@@ -154,6 +179,10 @@ async def _guard(coro):
     """API-Fehler in verständliche HA-Fehler übersetzen."""
     try:
         return await coro
+    except TraewellingRateLimitError as err:
+        raise HomeAssistantError(
+            f"Träwelling bremst gerade (Rate-Limit). Bitte in {err.retry_after} s erneut versuchen."
+        ) from err
     except TraewellingAuthError as err:
         raise HomeAssistantError(SCOPE_HINT) from err
     except TraewellingCheckinError as err:
@@ -236,12 +265,31 @@ def async_setup_services(hass: HomeAssistant) -> None:
             body["body"] = call.data["body"]
 
         result = await _guard(coord.api.async_checkin(body))
+        status = result.get("status") or {}
+        coord.remember_checkin(status)
+
+        # Fahrkarte nachträglich zuordnen. Schlägt das fehl, bleibt der
+        # Check-in trotzdem bestehen – die Karte zeigt dann einen Hinweis.
+        ticket_id = call.data.get("ticket_id")
+        ticket_ok: bool | None = None
+        ticket_error: str | None = None
+        if ticket_id and status.get("id"):
+            try:
+                await coord.api.async_assign_ticket(status["id"], ticket_id)
+                ticket_ok = True
+                coord.last_ticket = {"id": ticket_id}
+            except TraewellingError as err:
+                ticket_ok = False
+                ticket_error = str(err)
+                _LOGGER.warning("Fahrkarte konnte nicht zugeordnet werden: %s", err)
+
         # Sofort neu laden, damit Sensoren und Karte die neue Fahrt zeigen.
         await coord.async_request_refresh()
 
-        status = result.get("status") or {}
         points = result.get("points") or {}
         return {
+            "ticket_assigned": ticket_ok,
+            "ticket_error": ticket_error,
             "status_id": status.get("id"),
             "url": f"https://traewelling.de/status/{status['id']}" if status.get("id") else None,
             "points": points.get("points") if isinstance(points, dict) else points,
@@ -252,6 +300,37 @@ def async_setup_services(hass: HomeAssistant) -> None:
             ],
         }
 
+    async def get_tickets(call: ServiceCall) -> ServiceResponse:
+        """Am Tag gültige Fahrkarten + Vorschlag (zuletzt genutzte, falls gültig)."""
+        coord = _coordinator(hass, call)
+        valid_on = call.data.get("date") or dt_util.now().date().isoformat()
+        try:
+            raw = await coord.api.async_tickets(valid_on)
+        except TraewellingAuthError:
+            # Funktion für das Konto nicht verfügbar oder Scope fehlt → Feld ausblenden.
+            return {"available": False, "tickets": [], "suggested": None}
+        except TraewellingRateLimitError as err:
+            raise HomeAssistantError(
+                f"Träwelling bremst gerade (Rate-Limit). Bitte in {err.retry_after} s erneut versuchen."
+            ) from err
+        except TraewellingError as err:
+            raise HomeAssistantError(f"Fahrkarten nicht abrufbar: {err}") from err
+
+        tickets = [t for t in map(_ticket, raw) if t]
+        last_id = (coord.last_ticket or {}).get("id")
+        suggested = last_id if any(t["id"] == last_id for t in tickets) else None
+        return {
+            "available": True,
+            "date": valid_on,
+            "tickets": tickets,
+            "last_used": last_id,
+            "suggested": suggested,
+        }
+
+    hass.services.async_register(
+        DOMAIN, "get_tickets", get_tickets, TICKETS_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
     hass.services.async_register(
         DOMAIN, "search_stations", search_stations, SEARCH_SCHEMA,
         supports_response=SupportsResponse.ONLY,

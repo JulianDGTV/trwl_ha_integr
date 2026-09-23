@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Connect Träwelling",
-        "description": "Create a personal access token at traewelling.de → Settings → API/Applications with the scopes read-statuses and read-statistics.",
+        "description": "Create a personal access token at traewelling.de → Settings → API/Applications with the scopes read-statuses, read-statistics and (for check-in) write-statuses.",
         "data": {
           "token": "Access token",
           "base_url": "Instance URL"
@@ -11,6 +11,13 @@
       },
       "reauth_confirm": {
         "title": "Update token",
+        "data": {
+          "token": "Access token"
+        }
+      },
+      "reconfigure": {
+        "title": "Change token",
+        "description": "Enter a new access token, e.g. one that additionally has the write-statuses scope for check-ins.",
         "data": {
           "token": "Access token"
         }
@@ -22,7 +29,8 @@
     },
     "abort": {
       "already_configured": "This Träwelling account is already set up.",
-      "reauth_successful": "Token updated."
+      "reauth_successful": "Token updated.",
+      "reconfigure_successful": "Token updated."
     }
   },
   "options": {
@@ -32,8 +40,139 @@
         "data": {
           "active_interval": "Active journey poll interval (seconds)",
           "stats_interval": "Statistics poll interval (minutes)",
-          "stats_from": "Statistics start date (YYYY-MM-DD)",
-          "lookahead": "Look-ahead for planned trips (minutes, 0 = off)"
+          "stats_from": "Statistics start date (YYYY-MM-DD)"
+        }
+      }
+    }
+  },
+  "services": {
+    "search_stations": {
+      "name": "Search stations",
+      "description": "Search stations by name or coordinates. Without parameters: home station and recently used stations.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Account",
+          "description": "Träwelling account (optional)."
+        },
+        "query": {
+          "name": "Search",
+          "description": "Station name."
+        },
+        "latitude": {
+          "name": "Latitude",
+          "description": "For the nearest station."
+        },
+        "longitude": {
+          "name": "Longitude",
+          "description": "For the nearest station."
+        }
+      }
+    },
+    "get_departures": {
+      "name": "Get departures",
+      "description": "Live departures of a station.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Account",
+          "description": "Träwelling account (optional)."
+        },
+        "station_id": {
+          "name": "Station ID",
+          "description": "Träwelling station ID."
+        },
+        "when": {
+          "name": "Time",
+          "description": "ISO-8601 start time (optional)."
+        },
+        "travel_type": {
+          "name": "Mode",
+          "description": "Filter by transport mode."
+        }
+      }
+    },
+    "get_trip": {
+      "name": "Get trip",
+      "description": "All stops of a trip.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Account",
+          "description": "Träwelling account (optional)."
+        },
+        "trip_id": {
+          "name": "Trip ID",
+          "description": "tripId from the departure."
+        },
+        "line_name": {
+          "name": "Line",
+          "description": "Line name, e.g. ICE 273."
+        }
+      }
+    },
+    "checkin": {
+      "name": "Check in",
+      "description": "Check in to a trip on Träwelling. Requires the write-statuses scope.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Account",
+          "description": "Träwelling account (optional)."
+        },
+        "trip_id": {
+          "name": "Trip ID",
+          "description": "tripId from the departure."
+        },
+        "line_name": {
+          "name": "Line",
+          "description": "Line name."
+        },
+        "start_id": {
+          "name": "Start station ID",
+          "description": "Station ID of the boarding stop."
+        },
+        "destination_id": {
+          "name": "Destination station ID",
+          "description": "Station ID of the exit stop."
+        },
+        "departure": {
+          "name": "Departure",
+          "description": "Planned departure (ISO-8601)."
+        },
+        "arrival": {
+          "name": "Arrival",
+          "description": "Planned arrival (ISO-8601)."
+        },
+        "body": {
+          "name": "Status text",
+          "description": "Optional, max. 280 characters."
+        },
+        "visibility": {
+          "name": "Visibility",
+          "description": "Who can see the check-in."
+        },
+        "business": {
+          "name": "Trip type",
+          "description": "Private, business or commute."
+        },
+        "toot": {
+          "name": "Post to Mastodon",
+          "description": "Share on Mastodon if connected."
+        },
+        "ticket_id": {
+          "name": "Ticket",
+          "description": "ID of a ticket to attach to the check-in."
+        }
+      }
+    },
+    "get_tickets": {
+      "name": "Get tickets",
+      "description": "Your tickets valid on a given day, plus the suggested (last used) ticket.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Account",
+          "description": "Träwelling account (optional)."
+        },
+        "date": {
+          "name": "Date",
+          "description": "Day the ticket must be valid on (default: today)."
         }
       }
     }

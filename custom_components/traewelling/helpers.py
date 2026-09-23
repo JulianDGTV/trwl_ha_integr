@@ -43,19 +43,6 @@ def destination_of(status: dict[str, Any] | None) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
-def status_user_id(status: dict[str, Any] | None) -> Any:
-    """ID des Verfassers: neu `user`, früher `userDetails` bzw. flach."""
-    if not isinstance(status, dict):
-        return None
-    for key in ("user", "userDetails"):
-        value = status.get(key)
-        if isinstance(value, dict) and value.get("id") is not None:
-            return value["id"]
-        if isinstance(value, (int, str)):
-            return value
-    return first(status, "userId", "user_id")
-
-
 def parse_dt(value: Any) -> datetime | None:
     """ISO-8601-String in ein aware datetime wandeln."""
     if not isinstance(value, str):
@@ -106,62 +93,58 @@ def minutes_to_hours(value: Any) -> float | None:
     return round(value / 60, 1)
 
 
-GROUP_ALIASES = {
-    "yearly":  ("yearly", "years", "year"),
-    "monthly": ("monthly", "months", "month"),
-    "weekly":  ("weekly", "weeks", "week"),
-}
-
-
 def history_entry(
-    history: dict[str, Any] | None, group: str, period: str
+    history: dict[str, Any] | None, group: str, key: str
 ) -> dict[str, Any] | None:
     """Eintrag aus /statistics/history holen.
 
-    Die API liefert Listen unter `yearly`, `monthly` und `weekly`; jeder
-    Eintrag hat `period` ("2026" bzw. "2026-09"), `period_type`,
-    `checkin_count` und `distance_km`.
+    `group` ist "years", "months" oder "weeks"; `key` z. B. "2026-09".
+    Die API kann die Buckets als Dict (key -> werte) oder als Liste von
+    Objekten liefern – beides wird unterstützt.
     """
     if not isinstance(history, dict):
         return None
-    data = history.get("data") if isinstance(history.get("data"), dict) else history
 
     bucket = None
-    for candidate in GROUP_ALIASES.get(group, (group,)):
-        if candidate in data:
-            bucket = data[candidate]
+    aliases = {"years": "yearly", "months": "monthly", "weeks": "weekly"}
+    for candidate in (
+        aliases.get(group, group),
+        group,
+        group.rstrip("s"),
+        f"by{group.capitalize()}",
+    ):
+        if candidate in history:
+            bucket = history[candidate]
             break
     if bucket is None:
+        return None
+
+    if isinstance(bucket, dict):
+        entry = bucket.get(key)
+        if isinstance(entry, dict):
+            return entry
+        if isinstance(entry, (int, float)):
+            return {"count": entry}
         return None
 
     if isinstance(bucket, list):
         for item in bucket:
             if not isinstance(item, dict):
                 continue
-            label = first(item, "period", "key", "date", "label")
-            if str(label) == period:
+            label = first(item, "key", "date", "period", "label", "year", "month", "week")
+            if str(label) == key:
                 return item
-        return None
-
-    if isinstance(bucket, dict):
-        entry = bucket.get(period)
-        if isinstance(entry, dict):
-            return entry
-        if isinstance(entry, (int, float)):
-            return {"checkin_count": entry}
     return None
 
 
 def history_count(entry: dict[str, Any] | None) -> int | None:
-    value = first(entry or {}, "checkin_count", "count", "checkins", "amount")
+    value = first(entry or {}, "count", "checkins", "checkinCount", "checkin_count", "amount")
     return int(value) if isinstance(value, (int, float)) else None
 
 
 def history_distance_km(entry: dict[str, Any] | None) -> float | None:
-    """`distance_km` ist bereits in Kilometern, `distance` waere in Metern."""
-    if not isinstance(entry, dict):
-        return None
-    value = entry.get("distance_km")
-    if isinstance(value, (int, float)):
-        return round(float(value), 1)
-    return meters_to_km(first(entry, "distance", "totalDistance"))
+    entry = entry or {}
+    km = first(entry, "distance_km", "km")
+    if isinstance(km, (int, float)):
+        return round(float(km), 1)
+    return meters_to_km(first(entry, "distance", "totalDistance", "distance_total"))

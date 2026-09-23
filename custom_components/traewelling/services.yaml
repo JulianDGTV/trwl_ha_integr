@@ -132,3 +132,18 @@ checkin:
       default: false
       selector:
         boolean:
+    ticket_id:
+      example: 9f1c2a3b-0000-4000-8000-123456789abc
+      selector:
+        text:
+
+get_tickets:
+  fields:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: traewelling
+    date:
+      example: "2026-09-23"
+      selector:
+        date:

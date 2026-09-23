@@ -76,6 +76,8 @@ def trip_of(status: dict[str, Any], now: datetime) -> dict[str, Any] | None:
         "destination": dest.get("name"),
         "departure": _iso(dep),
         "arrival": _iso(arr),
+        "origin_platform": first(origin, "departurePlatformReal", "departurePlatformPlanned", "platform"),
+        "destination_platform": first(dest, "arrivalPlatformReal", "arrivalPlatformPlanned", "platform"),
         "departure_planned": first(origin, "departurePlanned", "departure"),
         "arrival_planned": first(dest, "arrivalPlanned", "arrival"),
         "delay_arrival": delay_minutes(arrival(status, real=False), arr),

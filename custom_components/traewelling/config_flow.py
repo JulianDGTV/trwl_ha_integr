@@ -21,12 +21,10 @@ from .api import TraewellingApi, TraewellingAuthError, TraewellingError
 from .const import (
     CONF_ACTIVE_INTERVAL,
     CONF_BASE_URL,
-    CONF_LOOKAHEAD,
     CONF_STATS_FROM,
     CONF_STATS_INTERVAL,
     DEFAULT_ACTIVE_INTERVAL,
     DEFAULT_BASE_URL,
-    DEFAULT_LOOKAHEAD,
     DEFAULT_STATS_FROM,
     DEFAULT_STATS_INTERVAL,
     DOMAIN,
@@ -119,6 +117,27 @@ class TraewellingConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Token tauschen, z. B. um den Scope write-statuses für den Check-in zu ergänzen."""
+        entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
+        assert entry is not None
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            data = {**entry.data, CONF_TOKEN: user_input[CONF_TOKEN].strip()}
+            _, errors = await self._async_validate(data)
+            if not errors:
+                return self.async_update_reload_and_abort(
+                    entry, data=data, reason="reconfigure_successful"
+                )
+
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=vol.Schema({vol.Required(CONF_TOKEN): str}),
+            errors=errors,
+        )
+
     @staticmethod
     @callback
     def async_get_options_flow(entry: ConfigEntry) -> OptionsFlow:
@@ -145,10 +164,6 @@ class TraewellingOptionsFlow(OptionsFlow):
                     CONF_STATS_INTERVAL,
                     default=current.get(CONF_STATS_INTERVAL, DEFAULT_STATS_INTERVAL),
                 ): vol.All(int, vol.Range(min=5, max=1440)),
-                vol.Optional(
-                    CONF_LOOKAHEAD,
-                    default=current.get(CONF_LOOKAHEAD, DEFAULT_LOOKAHEAD),
-                ): vol.All(int, vol.Range(min=0, max=720)),
                 vol.Optional(
                     CONF_STATS_FROM,
                     default=current.get(CONF_STATS_FROM, DEFAULT_STATS_FROM),

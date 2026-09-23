@@ -3,10 +3,15 @@
   "name": "Träwelling",
   "codeowners": [],
   "config_flow": true,
-  "documentation": "https://traewelling.de/api/documentation",
+  "dependencies": [
+    "frontend",
+    "http",
+    "lovelace"
+  ],
+  "documentation": "https://github.com/JulianDGTV/trwl_ha_integr",
   "integration_type": "service",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/Traewelling/traewelling/issues",
+  "issue_tracker": "https://github.com/JulianDGTV/trwl_ha_integr/issues",
   "requirements": [],
-  "version": "1.4.0"
+  "version": "1.6.0"
 }
