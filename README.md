@@ -143,7 +143,9 @@ location_entity: device_tracker.mein_handy            # Standortquelle, sonst au
 
 Ein angefangener Check-in wird nie unterbrochen – auch nicht, wenn sich im Hintergrund der Fahrtstatus ändert oder Home Assistant die Karte neu aufbaut.
 
-**„Station in meiner Nähe“:** Im Browser wird der Browser-Standort genutzt. In der
+**„Station in meiner Nähe“:** Träwelling sucht serverseitig nur in einem kleinen Umkreis (laut Quellcode standardmäßig ~200 m). Findet es dort nichts, erweitert die Integration die Suche stufenweise auf ca. 400 m, 1 km und 2 km und zeigt die gefundenen Stationen mit Entfernung zur Auswahl. Das sind je nach Stufe bis zu 19 Anfragen, aber nur, wenn am Standort selbst nichts gefunden wurde. Liegt direkt eine Station in der Nähe, öffnen sich sofort ihre Abfahrten.
+
+Im Browser wird der Browser-Standort genutzt. In der
 Home-Assistant-App (oder wenn der Browser den Standort verweigert) nimmt die Karte
 automatisch den Standort, den die App an Home Assistant meldet – über deine
 `person`-Entität bzw. deren Device-Tracker. Voraussetzung: In der App unter
@@ -337,6 +339,7 @@ logger:
 
 ## 📝 Changelog
 
+- **1.6.1** – 📍 „Station in meiner Nähe“ erweitert den Suchradius stufenweise (400 m → 1 km → 2 km), wenn direkt am Standort nichts gefunden wird, und bietet die Treffer mit Entfernung zur Auswahl an
 - **1.6.0** – 🎨 Neues Design für eigene, bevorstehende und Freundes-Fahrten (Linienfarbe, Zeitleiste, Fortschritt mit Verkehrsmittel-Symbol, Verspätungs-Badges, Profilbilder) · 📈 Neue Statistik-Karte mit Monatsdiagramm, Kennzahlen, Favoriten und Rangliste · ⏱️ Statistik standardmäßig nur noch stündlich · 📡 Sensor „Monatsverlauf“ · 🚉 Check-in zeigt nur noch die 5 zuletzt genutzten Stationen
 - **1.5.0** – 🕐 Eingecheckte Fahrten der nächsten Stunde erscheinen als „Bald unterwegs“, während einer Fahrt als „Danach: …“ · neuer Sensor „Nächste Fahrt“ · 🧹 Favoriten-Bereich aus der Dashboard-Vorlage entfernt
 - **1.4.0** – 🎫 Fahrkarte beim Check-in (Vorschlag: zuletzt genutzte, solange gültig) · 👥 Freunde-Karte im Design der eigenen Fahrt · 🔁 „Anschluss einchecken“ während einer Fahrt · 🐛 Check-in wird nicht mehr durch Hintergrund-Aktualisierungen unterbrochen · 🤝 Fair Use: Statistik-Anfragen laufen im Hintergrund mit 3 s Abstand statt als Stoß · ⏳ Bei HTTP 429 wird `Retry-After` respektiert – bis dahin gehen keine Anfragen an Träwelling raus · 🪪 Eindeutiger User-Agent mit Version und Repo-Link
