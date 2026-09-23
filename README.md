@@ -9,7 +9,9 @@ aus dem Dashboard.
 - **Meine Fahrt** – Linie, Start/Ziel, Zeiten, Verspätung, Gleis, Fortschritt, Restzeit
 - **Freunde unterwegs** – alle gerade laufenden Fahrten der Accounts, denen du folgst, mit Link zum Profil
 - **Check-in-Karte** – Station suchen (oder per Standort), Live-Abfahrten mit Verspätung und Gleis, Ausstieg wählen, einchecken
-- **Statistik** – Check-ins und Distanz für Monat, Jahr und gesamt, Punkte, Reisezeit, aktive Tage
+- **Statistik** – Check-ins und Distanz für Woche, Monat, Jahr und gesamt, Punkte, Reisezeit, aktive Tage, Ø-Distanz, längste Fahrt
+- **Favoriten** – Lieblingsstationen, -linien, -strecken und Verkehrsmittel des laufenden Jahres
+- **Freunde-Rangliste** – dein Rang unter Freunden (Punkte der letzten 7 Tage)
 - **Services** für Stationssuche, Abfahrten, Fahrtverlauf und Check-in – nutzbar in eigenen Automationen
 
 ## 📦 Installation
@@ -81,12 +83,25 @@ Person die laufende Fahrt, nach Ankunft sortiert:
 
 **Statistik** (standardmäßig alle 30 min – die API cacht serverseitig 1–6 h)
 
-| Entität endet auf | Quelle |
-|---|---|
-| `…_punkte_gesamt`, `…_distanz_gesamt`, `…_reisezeit_gesamt` | Profil |
-| `…_check_ins_gesamt`, `…_aktive_reisetage` | `/statistics/overview` |
-| `…_check_ins_diesen_monat`, `…_distanz_diesen_monat` | `/statistics/overview` ab Monatsanfang |
-| `…_check_ins_dieses_jahr`, `…_distanz_dieses_jahr` | `/statistics/overview` ab Jahresanfang |
+| Entität endet auf | Inhalt | Quelle |
+|---|---|---|
+| `…_punkte_gesamt`, `…_distanz_gesamt`, `…_reisezeit_gesamt` | Punkte, km, Stunden | Profil |
+| `…_check_ins_gesamt` | Check-ins seit Statistik-Start, längste/kürzeste Fahrten als Attribute | `/statistics/overview` |
+| `…_aktive_reisetage`, `…_durchschnittsdistanz` | Reisetage, Ø km pro Fahrt | `/statistics/overview` |
+| `…_check_ins_diese_woche`, `…_distanz_diese_woche` | ab Montag | `/statistics/overview` |
+| `…_check_ins_diesen_monat`, `…_distanz_diesen_monat` | ab Monatsanfang | `/statistics/overview` |
+| `…_check_ins_dieses_jahr`, `…_distanz_dieses_jahr` | ab Jahresanfang | `/statistics/overview` |
+| `…_langste_fahrt_dieses_jahr` | km, Details (Linie, Start, Ziel, Datum, Link) als Attribute | `/statistics/overview` |
+
+**Favoriten & Rangliste**
+
+| Entität endet auf | Zustand | Attribute |
+|---|---|---|
+| `…_lieblingsstation` | meistbesuchte Station dieses Jahr | `top` (Top 10 mit Anzahl) |
+| `…_lieblingslinie` | meistgefahrene Linie | `top` (Anzahl, km) |
+| `…_lieblingsstrecke` | häufigste Strecke „A → B“ | `top` (Anzahl, km) |
+| `…_haufigstes_verkehrsmittel` | z. B. „Fernverkehr (ICE)“ | `categories`, `operators`, `purposes` |
+| `…_rang_unter_freunden` | dein Platz (letzte 7 Tage) | `leaderboard` (Top 10), `my_points`, `participants` |
 
 Intervalle und Statistik-Startdatum: Integration → **Konfigurieren**.
 
@@ -101,6 +116,7 @@ type: custom:traewelling-checkin-card
 title: Einchecken
 show_current_trip: true   # false = Karte ausblenden, solange du unterwegs bist
 entity: binary_sensor.trawelling_deinname_unterwegs   # sonst automatisch
+location_entity: device_tracker.mein_handy            # Standortquelle, sonst automatisch
 ```
 
 **So funktioniert sie:**
@@ -110,6 +126,13 @@ entity: binary_sensor.trawelling_deinname_unterwegs   # sonst automatisch
 3. **Abfahrt gewählt** → alle folgenden Halte mit Ankunftszeiten
 4. **Ausstieg gewählt** → Statustext, Sichtbarkeit und Reiseart, dann „Jetzt einchecken“
 5. **Unterwegs** → die Karte zeigt deine laufende Fahrt mit Fortschrittsbalken
+
+**„Station in meiner Nähe“:** Im Browser wird der Browser-Standort genutzt. In der
+Home-Assistant-App (oder wenn der Browser den Standort verweigert) nimmt die Karte
+automatisch den Standort, den die App an Home Assistant meldet – über deine
+`person`-Entität bzw. deren Device-Tracker. Voraussetzung: In der App unter
+**Einstellungen → Companion App → Standort** ist die Standortfreigabe aktiv. Wie
+alt der Standort ist, steht über den Abfahrten.
 
 Sichtbarkeit, Reiseart und Verkehrsmittel-Filter merkt sich die Karte pro Gerät.
 Der Token bleibt dabei in Home Assistant – die Karte spricht nur mit den
@@ -135,7 +158,8 @@ data:
 ## 🖥️ Dashboard
 
 Fertige Ansicht mit **Meine Fahrt** (Check-in-Karte), **Freunde unterwegs**
-(Name antippen → Profil) und **Statistik**.
+(Name antippen → Profil), **Statistik** (Woche/Monat/Jahr/gesamt),
+**Freunde-Rangliste** und **Favoriten**.
 
 Einfügen: Dashboard bearbeiten → **„+“** (neue Ansicht) → ⋮ →
 **„In YAML bearbeiten“** → Inhalt ersetzen → Speichern.
@@ -198,24 +222,91 @@ sections:
       - type: heading
         heading: Statistik
         icon: mdi:chart-bar
+        tap_action:
+          action: url
+          url_path: https://traewelling.de/statistics
       - type: markdown
         grid_options:
           columns: full
         content: |-
           {% set e = integration_entities('traewelling') %}
-          {% macro v(key) -%}
-          {%- set x = e | select('search', '_' ~ key ~ '$') | first | default(none) -%}
-          {%- if x and states(x) not in ['unknown', 'unavailable'] -%}
-          {{ (states(x) ~ ' ' ~ (state_attr(x, 'unit_of_measurement') or '')) | trim }}
-          {%- else -%}–{%- endif -%}
+          {% macro ent(key) -%}{{ e | select('search', '_' ~ key ~ '$') | first | default('') }}{%- endmacro %}
+          {% macro n(key) -%}
+          {%- set x = ent(key) -%}
+          {%- if x and states(x) | is_number -%}{{ '{:,.0f}'.format(states(x) | float).replace(',', '.') }}{%- else -%}–{%- endif -%}
           {%- endmacro %}
+          {% macro v(key) -%}
+          {%- set x = ent(key) -%}
+          {%- if x and states(x) not in ['unknown', 'unavailable'] -%}{{ states(x) }}{%- else -%}–{%- endif -%}
+          {%- endmacro %}
+          | | Woche | Monat | Jahr | Gesamt |
+          |---|---:|---:|---:|---:|
+          | 🎫 Check-ins | {{ n('check_ins_diese_woche') }} | {{ n('check_ins_diesen_monat') }} | {{ n('check_ins_dieses_jahr') }} | {{ n('check_ins_gesamt') }} |
+          | 📏 km | {{ n('distanz_diese_woche') }} | {{ n('distanz_diesen_monat') }} | {{ n('distanz_dieses_jahr') }} | {{ n('distanz_gesamt') }} |
 
-          | | Monat | Jahr | Gesamt |
-          |---|---:|---:|---:|
-          | 🎫 Check-ins | {{ v('check_ins_diesen_monat') }} | {{ v('check_ins_dieses_jahr') }} | {{ v('check_ins_gesamt') }} |
-          | 📏 Distanz | {{ v('distanz_diesen_monat') }} | {{ v('distanz_dieses_jahr') }} | {{ v('distanz_gesamt') }} |
+          ⭐ **{{ n('punkte_gesamt') }}** Punkte · ⏱️ **{{ n('reisezeit_gesamt') }} h** unterwegs · 📅 **{{ n('aktive_reisetage') }}** Reisetage · 📐 Ø **{{ n('durchschnittsdistanz') }} km** pro Fahrt
+          {% set l = ent('langste_fahrt_dieses_jahr') %}
+          {% if l and state_attr(l, 'origin') %}
 
-          ⭐ **{{ v('punkte_gesamt') }}** Punkte · ⏱️ **{{ v('reisezeit_gesamt') }}** Reisezeit · 📅 **{{ v('aktive_reisetage') }}** aktive Tage
+          🏆 **Längste Fahrt {{ now().year }}:** {{ state_attr(l, 'line') }} {{ state_attr(l, 'origin') }} → {{ state_attr(l, 'destination') }} · **{{ n('langste_fahrt_dieses_jahr') }} km**
+          {% endif %}
+
+          [📊 Alle Statistiken auf traewelling.de →](https://traewelling.de/statistics)
+
+  - type: grid
+    cards:
+      - type: heading
+        heading: Freunde-Rangliste · 7 Tage
+        icon: mdi:podium
+      - type: markdown
+        grid_options:
+          columns: full
+        content: |-
+          {% set e = integration_entities('traewelling') %}
+          {% set r = e | select('search', '_rang_unter_freunden$') | first | default(none) %}
+          {% set board = state_attr(r, 'leaderboard') if r else none %}
+          {% if board %}
+          | # | Name | Punkte | km |
+          |---:|---|---:|---:|
+          {% for p in board -%}
+          | {{ ['🥇','🥈','🥉'][p.rank - 1] if p.rank <= 3 else p.rank }} | {% if p.me %}**{{ p.name }}** (du){% else %}[{{ p.name }}](https://traewelling.de/@{{ p.username }}){% endif %} | {{ p.points }} | {{ '{:,.0f}'.format(p.distance_km or 0).replace(',', '.') }} |
+          {% endfor %}
+          {% else %}
+          Noch keine Rangliste – folgst du schon jemandem auf Träwelling?
+          {% endif %}
+
+  - type: grid
+    cards:
+      - type: heading
+        heading: Favoriten · dieses Jahr
+        icon: mdi:heart
+      - type: markdown
+        grid_options:
+          columns: full
+        content: |-
+          {% set e = integration_entities('traewelling') %}
+          {% macro ent(key) -%}{{ e | select('search', '_' ~ key ~ '$') | first | default('') }}{%- endmacro %}
+          {% macro top(key, label, field) -%}
+          {%- set x = ent(key) -%}
+          {%- set items = (state_attr(x, 'top') or [])[:3] if x else [] -%}
+          {%- if items %}
+          **{{ label }}**
+          {% for i in items %}
+          {{ loop.index }}. {{ i[field] }} · {{ i.count }}×{% if i.distance_km %} · {{ '{:,.0f}'.format(i.distance_km).replace(',', '.') }} km{% endif %}
+          {% endfor %}
+          {% endif -%}
+          {%- endmacro %}
+          {{ top('lieblingsstation', '🚉 Stationen', 'name') }}
+          {{ top('lieblingslinie', '🚆 Linien', 'linename') }}
+          {{ top('lieblingsstrecke', '🔁 Strecken', 'label') }}
+          {% set c = ent('haufigstes_verkehrsmittel') %}
+          {% set cats = (state_attr(c, 'categories') or [])[:4] if c else [] %}
+          {% if cats %}
+          **🚄 Verkehrsmittel**
+          {% for k in cats %}
+          {{ loop.index }}. {{ k.name }} · {{ k.count }}× · {{ (k.hours or 0) | round(0) | int }} h
+          {% endfor %}
+          {% endif %}
 ```
 
 ## 🤖 Automatisierungs-Beispiele
@@ -261,7 +352,8 @@ Entity-IDs an deine Installation anpassen.
 | `GET /api/v1/auth/user` | – |
 | `GET /api/v1/user/statuses/active` (404 = keine Fahrt) | `read-statuses` |
 | `GET /api/v1/dashboard` | `read-statuses` |
-| `GET /api/v1/statistics/overview`, `/statistics/history` | `read-statistics` |
+| `GET /api/v1/statistics/overview`, `/statistics/history`, `/statistics/favorites`, `/statistics` | `read-statistics` |
+| `GET /api/v1/leaderboard/friends` | `read-statistics` |
 | `GET /api/v1/trains/station/autocomplete/{query}`, `/nearby`, `/history` | `write-statuses` |
 | `GET /api/v1/station/{id}/departures` | `write-statuses` |
 | `GET /api/v1/trains/trip` | `write-statuses` |
@@ -271,7 +363,7 @@ Entity-IDs an deine Installation anpassen.
 
 - **Check-in-Karte meldet „Zugriff abgelehnt“** → Token ohne `write-statuses`; neuen Token anlegen und über *Neu konfigurieren* eintragen.
 - **Karte „Custom element doesn't exist“** → Home Assistant nach dem Update neu starten und die Seite neu laden (Browser-Cache).
-- **Monat/Jahr leer** → Attribut `api_keys` am Sensor „Check-ins diesen Monat“ zeigt, welche Felder die API liefert.
+- **Statistik-Werte fehlen** → der Token braucht `read-statistics`; Träwelling cacht die Werte bis zu 6 h.
 - **Debug-Logging:**
 
 ```yaml
@@ -282,6 +374,9 @@ logger:
 
 ## 📝 Changelog
 
+- **1.3.2** – 📍 „Station in meiner Nähe“ funktioniert in der HA-App: Standort kommt aus Home Assistant (person/device_tracker), wenn der Browser-Standort nicht verfügbar ist
+- **1.3.1** – 🔧 Check-in-Karte wird als Dashboard-Ressource registriert und lädt nach Neustarts zuverlässig
+- **1.3.0** – 🐛 Distanz für Woche/Monat/Jahr repariert (richtige API-Felder) · 📊 Neu: Woche, Ø-Distanz, längste Fahrt des Jahres · ❤️ Favoriten (Stationen, Linien, Strecken, Verkehrsmittel) · 🏆 Freunde-Rangliste · 🖥️ erweiterte Dashboard-Karten
 - **1.2.0** – 🎫 Check-in-Karte mit Stationssuche, Standort, Live-Abfahrten und Ausstiegswahl · 🛠️ Services `search_stations`, `get_departures`, `get_trip`, `checkin` · 👤 Freunde verlinken auf ihr Profil · 🔑 Token über „Neu konfigurieren“ austauschbar
 - **1.1.1** – 🐛 Monat/Jahr-Statistik über `/statistics/overview`
 - **1.1.0** – 👥 Sensor „Freunde unterwegs“, Dashboard-Vorlage
