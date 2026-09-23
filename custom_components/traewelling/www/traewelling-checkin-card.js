@@ -11,10 +11,11 @@
  *   entity: binary_sensor.trawelling_xyz_unterwegs
  *   show_current_trip: true      # false = Karte ausblenden, solange du fährst
  *   title: Einchecken
+ *   location_entity: device_tracker.mein_handy   # Standortquelle für „In meiner Nähe“
  */
 
 const DOMAIN = "traewelling";
-const VERSION = "1.3.1";
+const VERSION = "1.3.2";
 
 const TYPES = [
   ["", "Alle"],
@@ -255,31 +256,81 @@ class TraewellingCheckinCard extends HTMLElement {
     }, 350);
   }
 
-  _nearby() {
-    if (!navigator.geolocation) {
-      this._s.error = "Standort wird von diesem Gerät nicht unterstützt.";
+  _inCompanionApp() {
+    return Boolean(
+      window.externalApp ||
+        window.webkit?.messageHandlers?.getExternalAuth ||
+        window.webkit?.messageHandlers?.externalBus ||
+        /Home ?Assistant/i.test(navigator.userAgent)
+    );
+  }
+
+  /** Standort, den die HA-App an Home Assistant meldet (person/device_tracker). */
+  _haLocation() {
+    const states = this._hass?.states || {};
+    const candidates = [];
+    if (this._config?.location_entity) candidates.push(this._config.location_entity);
+    const meId = Object.keys(states).find(
+      (id) => id.startsWith("person.") && states[id]?.attributes?.user_id === this._hass.user?.id
+    );
+    const me = meId ? states[meId] : null;
+    if (me) {
+      candidates.push(meId);
+      candidates.push(...(me.attributes.device_trackers || []));
+    }
+    let best = null;
+    for (const id of candidates) {
+      const st = states[id];
+      const lat = st?.attributes?.latitude;
+      const lon = st?.attributes?.longitude;
+      if (typeof lat !== "number" || typeof lon !== "number") continue;
+      const updated = new Date(st.last_updated || st.last_changed || 0);
+      if (!best || updated > best.updated) best = { lat, lon, updated, id };
+    }
+    return best;
+  }
+
+  async _searchAt(lat, lon, hint) {
+    const r = await this._call("search_stations", { latitude: lat, longitude: lon });
+    const st = (r.stations || [])[0];
+    if (!st) throw new Error("Keine Station in der Nähe gefunden.");
+    this._s.locationHint = hint || null;
+    await this._openStation(st, false);
+  }
+
+  _useHaLocation(reason) {
+    const loc = this._haLocation();
+    if (!loc) {
+      this._s.loading = false;
+      this._s.error =
+        (reason ? `${reason} ` : "") +
+        "Und in Home Assistant ist kein Standort für dich hinterlegt – in der HA-App unter " +
+        "Einstellungen → Companion App → Standort die Standortfreigabe aktivieren.";
       this._render();
       return;
     }
-    this._s.loading = true;
+    const mins = Math.max(0, Math.round((Date.now() - loc.updated) / 60000));
+    const age = mins < 1 ? "gerade eben" : mins < 60 ? `vor ${mins} min` : `vor ${Math.round(mins / 60)} h`;
+    this._run(() => this._searchAt(loc.lat, loc.lon, `📍 Standort aus der HA-App (${age})`));
+  }
+
+  _nearby() {
     this._s.error = null;
+    // In der Companion-App gibt die WebView den Browser-Standort oft nicht frei –
+    // dort direkt den Standort nehmen, den die App an HA meldet.
+    if (this._inCompanionApp() && this._haLocation()) {
+      this._useHaLocation();
+      return;
+    }
+    if (!navigator.geolocation) {
+      this._useHaLocation("Der Browser kann keinen Standort ermitteln.");
+      return;
+    }
+    this._s.loading = true;
     this._render();
     navigator.geolocation.getCurrentPosition(
-      (pos) =>
-        this._run(async () => {
-          const r = await this._call("search_stations", {
-            latitude: pos.coords.latitude,
-            longitude: pos.coords.longitude,
-          });
-          const st = (r.stations || [])[0];
-          if (!st) throw new Error("Keine Station in der Nähe gefunden.");
-          await this._openStation(st, false);
-        }),
-      (err) => {
-        this._s.loading = false;
-        this._s.error = `Standort nicht verfügbar: ${err.message}`;
-        this._render();
-      },
+      (pos) => this._run(() => this._searchAt(pos.coords.latitude, pos.coords.longitude, null)),
+      (err) => this._useHaLocation(`Browser-Standort nicht verfügbar (${err.message}).`),
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 }
     );
   }
@@ -393,7 +444,10 @@ class TraewellingCheckinCard extends HTMLElement {
       case "station": {
         const list = el.dataset.src === "recent" ? this._s.recent : el.dataset.src === "home" ? [this._s.home] : this._s.results;
         const st = list?.[i ?? 0];
-        if (st) this._openStation(st);
+        if (st) {
+          this._s.locationHint = null;
+          this._openStation(st);
+        }
         break;
       }
       case "nearby":
@@ -617,6 +671,7 @@ class TraewellingCheckinCard extends HTMLElement {
         ${when ? `<button class="chip" data-a="now">Jetzt</button>` : `<span class="live">● live</span>`}
         <button class="icon" data-a="refresh" title="Aktualisieren"><ha-icon icon="mdi:refresh"></ha-icon></button>
       </div>
+      ${this._s.locationHint ? `<div class="sub">${esc(this._s.locationHint)}</div>` : ""}
       <div class="chips">${chips}</div>
       <div class="list">${rows}</div>
       <div class="pager">
