@@ -7,6 +7,7 @@ der Träwelling-Token in Home Assistant und landet nie im Browser.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 import voluptuous as vol
@@ -133,6 +134,66 @@ def _departure(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# „In der Nähe": Träwelling sucht serverseitig nur in einem kleinen Umkreis
+# (Standard ~200 m). Findet es nichts, fragen wir Punkte auf immer größeren
+# Ringen um den Standort ab und sortieren die Treffer nach echter Entfernung.
+NEARBY_RINGS: tuple[tuple[int, int], ...] = ((400, 4), (1000, 6), (2000, 8))  # (Meter, Punkte)
+
+
+def _distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    r = 6371000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp, dl = p2 - p1, math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+
+def _ring(lat: float, lon: float, meters: int, points: int) -> list[tuple[float, float]]:
+    out = []
+    for i in range(points):
+        angle = 2 * math.pi * i / points
+        dlat = meters * math.cos(angle) / 111320.0
+        dlon = meters * math.sin(angle) / (111320.0 * max(0.01, math.cos(math.radians(lat))))
+        out.append((lat + dlat, lon + dlon))
+    return out
+
+
+async def _nearby(api: Any, lat: float, lon: float) -> dict[str, Any]:
+    """Nächste Station; bei Bedarf Suchradius stufenweise vergrößern."""
+    found: dict[Any, dict[str, Any]] = {}
+
+    def add(raw: Any) -> None:
+        st = _station(raw)
+        if st and st["id"] not in found:
+            if isinstance(st.get("latitude"), (int, float)) and isinstance(st.get("longitude"), (int, float)):
+                st["distance_m"] = round(_distance_m(lat, lon, st["latitude"], st["longitude"]))
+            found[st["id"]] = st
+
+    async def probe(plat: float, plon: float) -> Any:
+        try:
+            return await api.async_nearby_station(plat, plon)
+        except (TraewellingRateLimitError, TraewellingAuthError) as err:
+            async def _reraise() -> None:
+                raise err
+
+            return await _guard(_reraise())  # verständliche Fehlermeldung
+        except TraewellingError:
+            return None  # „keine Station gefunden" o. Ä. → nächster Punkt
+
+    add(await probe(lat, lon))
+    radius = 200
+    if not found:
+        for meters, points in NEARBY_RINGS:
+            for plat, plon in _ring(lat, lon, meters, points):
+                add(await probe(plat, plon))
+            radius = meters
+            if found:
+                break
+
+    stations = sorted(found.values(), key=lambda s: s.get("distance_m", 1e12))
+    return {"stations": stations[:6], "radius_m": radius, "expanded": radius > 200}
+
+
 def _ticket(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict) or not raw.get("id"):
         return None
@@ -207,8 +268,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
             return {"stations": [s for s in map(_station, stations) if s]}
 
         if lat is not None and lon is not None:
-            station = await _guard(api.async_nearby_station(lat, lon))
-            return {"stations": [s for s in [_station(station)] if s]}
+            return await _nearby(api, lat, lon)
 
         # Ohne Suche: Heimatbahnhof + zuletzt genutzte Stationen.
         history = await _guard(api.async_station_history())
