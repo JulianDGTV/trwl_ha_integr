@@ -35,14 +35,20 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 
 async def _async_register_card(hass: HomeAssistant) -> None:
-    """JS-Karte als statische Datei bereitstellen und im Frontend laden.
+    """JS-Karte bereitstellen und fürs Dashboard registrieren.
 
-    Dadurch muss keine Dashboard-Ressource von Hand angelegt werden.
+    1. Statischer Pfad für die Datei.
+    2. Eintrag als Dashboard-Ressource (Einstellungen → Dashboards → Ressourcen).
+       Die wird bei jedem Laden eines Dashboards mitgeladen – unabhängig davon,
+       wann die Integration beim Start fertig ist.
+    3. Fallback für YAML-Dashboards: extra_js_url.
     """
     manifest = await hass.async_add_executor_job(
         (Path(__file__).parent / "manifest.json").read_text, "utf-8"
     )
     version = json.loads(manifest).get("version", "0")
+    url = f"{CARD_URL_BASE}?v={version}"
+
     try:
         from homeassistant.components.http import StaticPathConfig
 
@@ -52,20 +58,62 @@ async def _async_register_card(hass: HomeAssistant) -> None:
     except ImportError:  # HA < 2024.7
         hass.http.register_static_path(CARD_URL_BASE, str(CARD_FILE), False)
     except RuntimeError:
-        # Pfad ist nach einem Reload bereits registriert.
-        pass
+        pass  # bereits registriert
+
+    if await _async_register_resource(hass, url):
+        return
 
     try:
         from homeassistant.components.frontend import add_extra_js_url
 
-        add_extra_js_url(hass, f"{CARD_URL_BASE}?v={version}")
+        add_extra_js_url(hass, url)
     except Exception as err:  # noqa: BLE001
         _LOGGER.warning(
             "Check-in-Karte konnte nicht automatisch geladen werden (%s). "
-            "Ressource manuell hinzufügen: %s",
+            "Bitte als Dashboard-Ressource (JavaScript-Modul) hinzufügen: %s",
             err,
-            CARD_URL_BASE,
+            url,
         )
+
+
+def _lovelace_resources(hass: HomeAssistant):
+    try:
+        from homeassistant.components.lovelace.const import LOVELACE_DATA
+
+        data = hass.data.get(LOVELACE_DATA)
+        if data is not None:
+            return getattr(data, "resources", None)
+    except ImportError:
+        pass
+    data = hass.data.get("lovelace")  # HA < 2025.2
+    if isinstance(data, dict):
+        return data.get("resources")
+    return getattr(data, "resources", None)
+
+
+async def _async_register_resource(hass: HomeAssistant, url: str) -> bool:
+    """Karte als Lovelace-Ressource eintragen bzw. Version aktualisieren."""
+    try:
+        resources = _lovelace_resources(hass)
+        if resources is None or not hasattr(resources, "async_create_item"):
+            return False  # YAML-Modus
+        if not getattr(resources, "loaded", True):
+            await resources.async_load()
+            resources.loaded = True
+
+        for item in resources.async_items():
+            if str(item.get("url", "")).split("?")[0] == CARD_URL_BASE:
+                if item.get("url") != url:
+                    await resources.async_update_item(
+                        item["id"], {"res_type": "module", "url": url}
+                    )
+                return True
+
+        await resources.async_create_item({"res_type": "module", "url": url})
+        return True
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("Lovelace-Ressource konnte nicht registriert werden: %s", err)
+        return False
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
