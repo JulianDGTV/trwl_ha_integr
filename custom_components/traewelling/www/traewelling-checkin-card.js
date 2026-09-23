@@ -16,7 +16,7 @@
  */
 
 const DOMAIN = "traewelling";
-const VERSION = "1.6.0";
+const VERSION = "1.6.1";
 
 const TYPES = [
   ["", "Alle"],
@@ -360,6 +360,7 @@ class TraewellingCheckinCard extends HTMLElement {
 
   _onSearch(value) {
     this._s.query = value;
+    this._s.nearby = null;
     clearTimeout(this._timers.search);
     if (value.trim().length < 2) {
       this._s.results = null;
@@ -415,11 +416,21 @@ class TraewellingCheckinCard extends HTMLElement {
   }
 
   async _searchAt(lat, lon, hint) {
+    this._s.nearby = null;
     const r = await this._call("search_stations", { latitude: lat, longitude: lon });
-    const st = (r.stations || [])[0];
-    if (!st) throw new Error("Keine Station in der Nähe gefunden.");
+    const stations = r.stations || [];
+    const km = (m) => (m >= 1000 ? `${(m / 1000).toLocaleString("de-DE", { maximumFractionDigits: 1 })} km` : `${m} m`);
+    if (!stations.length) {
+      throw new Error(`Keine Station im Umkreis von ${km(r.radius_m || 2000)} gefunden.`);
+    }
     this._s.locationHint = hint || null;
-    await this._openStation(st, false);
+    if (!r.expanded) {
+      // Direkt am Standort gefunden → gleich die Abfahrten zeigen.
+      await this._openStation(stations[0], false);
+      return;
+    }
+    // Suchradius musste vergrößert werden → Auswahl mit Entfernungen anbieten.
+    this._s.nearby = { stations, radius: km(r.radius_m) };
   }
 
   _useHaLocation(reason) {
@@ -596,7 +607,14 @@ class TraewellingCheckinCard extends HTMLElement {
     const i = el.dataset.i !== undefined ? Number(el.dataset.i) : undefined;
     switch (a) {
       case "station": {
-        const list = el.dataset.src === "recent" ? this._s.recent : el.dataset.src === "home" ? [this._s.home] : this._s.results;
+        const list =
+          el.dataset.src === "recent"
+            ? this._s.recent
+            : el.dataset.src === "home"
+              ? [this._s.home]
+              : el.dataset.src === "nearby"
+                ? this._s.nearby?.stations
+                : this._s.results;
         const st = list?.[i ?? 0];
         if (st) {
           this._s.locationHint = null;
@@ -762,10 +780,13 @@ class TraewellingCheckinCard extends HTMLElement {
 
   _resultsHtml() {
     const { results, recent, home, query } = this._s;
+    const dist = (m) =>
+      typeof m === "number" ? (m >= 1000 ? `${(m / 1000).toLocaleString("de-DE", { maximumFractionDigits: 1 })} km` : `${m} m`) : "";
     const item = (st, i, src, icon) => `
       <button class="row" data-a="station" data-src="${src}" data-i="${i}">
         <ha-icon icon="${icon}"></ha-icon>
         <span class="grow">${esc(st.name)}</span>
+        ${src === "nearby" && st.distance_m != null ? `<span class="plat">${dist(st.distance_m)}</span>` : ""}
         <ha-icon class="chev" icon="mdi:chevron-right"></ha-icon>
       </button>`;
 
@@ -775,6 +796,11 @@ class TraewellingCheckinCard extends HTMLElement {
       return results.map((s, i) => item(s, i, "results", "mdi:map-marker")).join("");
     }
     let html = "";
+    const nb = this._s.nearby;
+    if (nb?.stations?.length) {
+      html += `<div class="label">In der Nähe · erweiterte Suche (bis ca. ${esc(nb.radius)})</div>`;
+      html += nb.stations.map((s, i) => item(s, i, "nearby", "mdi:map-marker-radius")).join("");
+    }
     if (home) html += `<div class="label">Heimatbahnhof</div>${item(home, 0, "home", "mdi:home")}`;
     if (recent?.length) {
       html += `<div class="label">Zuletzt genutzt</div>`;
