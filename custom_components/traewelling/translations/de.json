@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Träwelling verbinden",
-        "description": "Erstelle unter traewelling.de → Einstellungen → API/Anwendungen einen persönlichen Access Token mit den Scopes read-statuses, read-statistics und (für den Check-in) write-statuses.",
+        "description": "Erstelle unter traewelling.de → Einstellungen → API/Anwendungen einen persönlichen Access Token mit den Scopes read-statuses, read-statistics sowie (für Check-in und Likes) write-statuses und write-likes.",
         "data": {
           "token": "Access Token",
           "base_url": "Instanz-URL"
@@ -173,6 +173,24 @@
         "date": {
           "name": "Datum",
           "description": "Tag, an dem die Fahrkarte gültig sein muss (Standard: heute)."
+        }
+      }
+    },
+    "like": {
+      "name": "Status liken",
+      "description": "Einen Status auf Träwelling liken (oder das Like zurücknehmen). Benötigt den Scope write-likes.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Konto",
+          "description": "Träwelling-Konto (optional)."
+        },
+        "status_id": {
+          "name": "Status-ID",
+          "description": "ID des Status."
+        },
+        "like": {
+          "name": "Liken",
+          "description": "An = liken, aus = Like zurücknehmen."
         }
       }
     }
