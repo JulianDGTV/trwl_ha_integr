@@ -10,7 +10,7 @@ aus dem Dashboard.
 - **Nächste Fahrt** – eingecheckte Fahrten, die in der nächsten Stunde starten, erscheinen als „Bald unterwegs“; während einer Fahrt als „Danach: …“
 - **Freunde unterwegs** – alle gerade laufenden Fahrten der Accounts, denen du folgst, mit Link zum Profil
 - **Check-in-Karte** – Station suchen (oder per Standort), Live-Abfahrten mit Verspätung und Gleis, Ausstieg wählen, Fahrkarte (z. B. BahnCard 100) hinterlegen, einchecken – auch als Anschluss während einer laufenden Fahrt
-- **Freunde-Karte** – laufende Fahrten deiner Freunde im selben Design wie die eigene Fahrt, Name antippen → Profil
+- **Freunde-Karte** – laufende Fahrten deiner Freunde im selben Design wie die eigene Fahrt, Name antippen → Profil, ❤️ Like direkt aus der Karte
 - **Statistik-Karte** – Kennzahlen für Woche, Monat, Jahr und gesamt, Balkendiagramm der letzten 12 Monate (Check-ins/km), längste Fahrt, Favoriten, Freunde-Rangliste
 - **Favoriten** – Lieblingsstationen, -linien und -strecken des laufenden Jahres (in der Statistik-Karte)
 - **Freunde-Rangliste** – dein Rang unter Freunden (Punkte der letzten 7 Tage)
@@ -36,7 +36,8 @@ Access Token anlegen:
 |---|---|
 | `read-statuses` | aktive Fahrt und Fahrten deiner Freunde |
 | `read-statistics` | Statistik-Sensoren |
-| `write-statuses` | Check-in-Karte (Stationen, Abfahrten, Einchecken) |
+| `write-statuses` | Check-in-Karte (Stationen, Abfahrten, Einchecken, Fahrkarte) |
+| `write-likes` | Freunden in der Freunde-Karte Likes geben |
 
 Fehlt ein Scope, läuft der Rest trotzdem weiter – nur der betroffene Teil bleibt
 leer bzw. zeigt einen Hinweis.
@@ -84,6 +85,7 @@ Person die laufende Fahrt, nach Ankunft sortiert:
 | Feld | Inhalt |
 |---|---|
 | `name`, `username`, `avatar`, `profile_url` | Anzeigename, Benutzername, Profilbild, Link zum Profil |
+| `likes`, `liked`, `likable` | Anzahl Likes, ob du schon geliked hast, ob Liken erlaubt ist |
 | `line`, `category` | Linie und Verkehrsmittel |
 | `origin`, `destination` | Start- und Zielhaltestelle |
 | `departure`, `arrival` | Abfahrt/Ankunft (Echtzeit, sonst Plan) |
@@ -163,7 +165,7 @@ entity: sensor.trawelling_deinname_freunde_unterwegs   # sonst automatisch
 empty_text: Gerade ist niemand unterwegs.
 ```
 
-Pro Freund: Profilbild und Name (→ Profil), Linie, Start und Ziel mit Zeiten, Verspätung und Gleis, Fortschrittsbalken und Restzeit, Link zum Status.
+Pro Freund: Profilbild und Name (→ Profil), Linie, Start und Ziel mit Zeiten, Verspätung und Gleis, Fortschrittsbalken und Restzeit, Link zum Status und ein ❤️-Button mit Like-Zahl. Das Herz reagiert sofort; klappt das Liken nicht (z. B. Scope `write-likes` fehlt), springt es zurück und die Karte zeigt den Grund.
 Der Token bleibt dabei in Home Assistant – die Karte spricht nur mit den
 Services der Integration.
 
@@ -205,6 +207,7 @@ nur noch der laufende Monat abgefragt.
 | `traewelling.get_departures` | ✅ | `station_id`, optional `when`, `travel_type` |
 | `traewelling.get_trip` | ✅ | `trip_id`, `line_name` → alle Halte |
 | `traewelling.checkin` | optional | `trip_id`, `line_name`, `start_id`, `destination_id`, `departure`, `arrival`, optional `body`, `visibility`, `business`, `toot`, `ticket_id` |
+| `traewelling.like` | optional | `status_id`, optional `like` (Standard `true`, `false` = Like zurücknehmen) |
 | `traewelling.get_tickets` | ✅ | optional `date` → am Tag gültige Fahrkarten + `suggested` (zuletzt genutzte, falls gültig) |
 
 Beispiel (Entwicklerwerkzeuge → Aktionen, „Antwort zurückgeben“):
@@ -372,6 +375,7 @@ Entity-IDs an deine Installation anpassen.
 | `POST /api/v1/trains/checkin` | `write-statuses` |
 | `GET /api/v1/tickets?validOn=` | – |
 | `PUT /api/v1/statuses/{id}/tickets` | `write-statuses` |
+| `POST`/`DELETE /api/v1/status/{id}/like` | `write-likes` |
 
 ## 🤝 Fair Use
 
@@ -401,6 +405,7 @@ logger:
 
 ## 📝 Changelog
 
+- **1.7.0** – ❤️ Freunden direkt aus der Freunde-Karte Likes geben (Scope `write-likes`) · 🛠️ Service `traewelling.like`
 - **1.6.2** – 🧩 Statistik-Karte lässt sich in einzelne Bausteine aufteilen (`show`, `header`) · 🖥️ Dashboard-Vorlage mit vielen kleinen Karten statt einer langen
 - **1.6.1** – 📍 „Station in meiner Nähe“ erweitert den Suchradius stufenweise (400 m → 1 km → 2 km), wenn direkt am Standort nichts gefunden wird, und bietet die Treffer mit Entfernung zur Auswahl an
 - **1.6.0** – 🎨 Neues Design für eigene, bevorstehende und Freundes-Fahrten (Linienfarbe, Zeitleiste, Fortschritt mit Verkehrsmittel-Symbol, Verspätungs-Badges, Profilbilder) · 📈 Neue Statistik-Karte mit Monatsdiagramm, Kennzahlen, Favoriten und Rangliste · ⏱️ Statistik standardmäßig nur noch stündlich · 📡 Sensor „Monatsverlauf“ · 🚉 Check-in zeigt nur noch die 5 zuletzt genutzten Stationen
