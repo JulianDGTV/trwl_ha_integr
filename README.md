@@ -154,7 +154,7 @@ automatisch den Standort, den die App an Home Assistant meldet – über deine
 **Einstellungen → Companion App → Standort** ist die Standortfreigabe aktiv. Wie
 alt der Standort ist, steht über den Abfahrten.
 
-Sichtbarkeit, Reiseart und Verkehrsmittel-Filter merkt sich die Karte pro Gerät.
+Sichtbarkeit und Reiseart merkt sich die Karte pro Gerät. Der Verkehrsmittel-Filter startet bei jeder Station auf „Alle“; liefert Träwelling mit einem Filter nichts (z. B. „Fern“ an einer Stadtbahn-Haltestelle), lädt die Karte automatisch alle Verkehrsmittel.
 
 ## 👥 Freunde-Karte
 
@@ -405,6 +405,7 @@ logger:
 
 ## 📝 Changelog
 
+- **1.7.1** – 🐛 Abfahrten laden wieder an Haltestellen ohne Fernverkehr: Verkehrsmittel-Filter wird nicht mehr gespeichert und fällt bei Fehlern automatisch auf „Alle“ zurück · 💬 Lesbare Fehlermeldungen von Träwelling (Umlaute, ohne JSON)
 - **1.7.0** – ❤️ Freunden direkt aus der Freunde-Karte Likes geben (Scope `write-likes`) · 🛠️ Service `traewelling.like`
 - **1.6.2** – 🧩 Statistik-Karte lässt sich in einzelne Bausteine aufteilen (`show`, `header`) · 🖥️ Dashboard-Vorlage mit vielen kleinen Karten statt einer langen
 - **1.6.1** – 📍 „Station in meiner Nähe“ erweitert den Suchradius stufenweise (400 m → 1 km → 2 km), wenn direkt am Standort nichts gefunden wird, und bietet die Treffer mit Entfernung zur Auswahl an

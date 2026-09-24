@@ -34,6 +34,20 @@ USER_AGENT = (
     "(Home Assistant; +https://github.com/JulianDGTV/trwl_ha_integr)"
 )
 
+def _error_text(status: int, body: str) -> str:
+    """Fehlermeldung aus der API-Antwort lesbar machen (JSON-„message“, Umlaute)."""
+    message = None
+    try:
+        data = json.loads(body)
+        if isinstance(data, dict):
+            message = data.get("message") or data.get("error")
+    except ValueError:
+        pass
+    if not isinstance(message, str) or not message.strip():
+        message = (body or "").strip()[:200] or "keine Details"
+    return f"{message} (HTTP {status})"
+
+
 # Fallback, wenn Träwelling 429 ohne Retry-After schickt.
 DEFAULT_RETRY_AFTER = 60
 MAX_RETRY_AFTER = 3600
@@ -134,8 +148,7 @@ class TraewellingApi:
                 if resp.status == 404 and allow_404:
                     return None
                 if resp.status >= 400:
-                    body = (await resp.text())[:300]
-                    raise TraewellingError(f"HTTP {resp.status} für {path}: {body}")
+                    raise TraewellingError(_error_text(resp.status, await resp.text()))
                 payload = await resp.json(content_type=None)
         except TraewellingError:
             raise

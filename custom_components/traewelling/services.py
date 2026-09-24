@@ -261,7 +261,7 @@ async def _guard(coro):
     except TraewellingCheckinError as err:
         raise HomeAssistantError(f"Check-in abgelehnt: {err}") from err
     except TraewellingError as err:
-        raise HomeAssistantError(f"Träwelling nicht erreichbar: {err}") from err
+        raise HomeAssistantError(f"Träwelling meldet: {err}") from err
 
 
 def async_setup_services(hass: HomeAssistant) -> None:
