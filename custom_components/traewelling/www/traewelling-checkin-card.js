@@ -16,7 +16,7 @@
  */
 
 const DOMAIN = "traewelling";
-const VERSION = "1.7.0";
+const VERSION = "1.7.1";
 
 const TYPES = [
   ["", "Alle"],
@@ -185,7 +185,7 @@ class TraewellingCheckinCard extends HTMLElement {
       recent: null,
       home: null,
       station: null,
-      travelType: store.get("travelType", ""),
+      travelType: "",
       when: null,
       times: {},
       departures: [],
@@ -473,6 +473,8 @@ class TraewellingCheckinCard extends HTMLElement {
   async _openStation(station, wrap = true) {
     this._s.station = station;
     this._s.when = null;
+    this._s.travelType = "";
+    this._s.filterHint = null;
     this._s.step = "departures";
     const load = () => this._loadDepartures();
     if (wrap) await this._run(load);
@@ -484,7 +486,19 @@ class TraewellingCheckinCard extends HTMLElement {
     const data = { station_id: this._s.station.id };
     if (this._s.when) data.when = this._s.when;
     if (this._s.travelType) data.travel_type = this._s.travelType;
-    const r = await this._call("get_departures", data);
+    let r;
+    try {
+      r = await this._call("get_departures", data);
+    } catch (err) {
+      // Mit Verkehrsmittel-Filter meldet Träwelling bei Haltestellen ohne dieses
+      // Verkehrsmittel teils „Station nicht gefunden“ – dann ohne Filter laden.
+      if (!this._s.travelType) throw err;
+      const label = (TYPES.find(([v]) => v === this._s.travelType) || [, "diesem Filter"])[1];
+      delete data.travel_type;
+      this._s.travelType = "";
+      r = await this._call("get_departures", data);
+      this._s.filterHint = `Keine Abfahrten mit Filter „${label}“ – zeige alle Verkehrsmittel.`;
+    }
     if (r.station?.name) this._s.station = { ...this._s.station, ...r.station };
     this._s.times = r.times || {};
     this._s.departures = r.departures || [];
@@ -631,7 +645,7 @@ class TraewellingCheckinCard extends HTMLElement {
         break;
       case "type":
         this._s.travelType = el.dataset.v;
-        store.set("travelType", el.dataset.v);
+        this._s.filterHint = null;
         this._run(() => this._loadDepartures());
         break;
       case "earlier":
@@ -864,6 +878,7 @@ class TraewellingCheckinCard extends HTMLElement {
         <button class="icon" data-a="refresh" title="Aktualisieren"><ha-icon icon="mdi:refresh"></ha-icon></button>
       </div>
       ${this._s.locationHint ? `<div class="sub">${esc(this._s.locationHint)}</div>` : ""}
+      ${this._s.filterHint ? `<div class="sub">ℹ️ ${esc(this._s.filterHint)}</div>` : ""}
       <div class="chips">${chips}</div>
       <div class="list">${rows}</div>
       <div class="pager">
