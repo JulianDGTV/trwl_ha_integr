@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Connect Träwelling",
-        "description": "Create a personal access token at traewelling.de → Settings → API/Applications with the scopes read-statuses, read-statistics and (for check-in) write-statuses.",
+        "description": "Create a personal access token at traewelling.de → Settings → API/Applications with the scopes read-statuses, read-statistics plus (for check-in and likes) write-statuses and write-likes.",
         "data": {
           "token": "Access token",
           "base_url": "Instance URL"
@@ -173,6 +173,24 @@
         "date": {
           "name": "Date",
           "description": "Day the ticket must be valid on (default: today)."
+        }
+      }
+    },
+    "like": {
+      "name": "Like status",
+      "description": "Like a status on Träwelling (or remove the like). Requires the write-likes scope.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Account",
+          "description": "Träwelling account (optional)."
+        },
+        "status_id": {
+          "name": "Status ID",
+          "description": "ID of the status."
+        },
+        "like": {
+          "name": "Like",
+          "description": "On = like, off = remove like."
         }
       }
     }

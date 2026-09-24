@@ -86,6 +86,9 @@ def trip_of(status: dict[str, Any], now: datetime) -> dict[str, Any] | None:
         "distance_km": meters_to_km(checkin.get("distance")),
         "body": status.get("body"),
         "status_id": status.get("id"),
+        "likes": status.get("likes") if isinstance(status.get("likes"), int) else None,
+        "liked": bool(status.get("liked")),
+        "likable": status.get("isLikable", True) is not False,
         "url": f"https://traewelling.de/status/{status['id']}" if status.get("id") else None,
     }
 
