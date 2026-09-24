@@ -16,7 +16,7 @@
  */
 
 const DOMAIN = "traewelling";
-const VERSION = "1.6.2";
+const VERSION = "1.7.0";
 
 const TYPES = [
   ["", "Alle"],
@@ -1131,6 +1131,50 @@ class TraewellingFriendsCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
+    this._pending = {}; // status_id → { liked, likes } bis der Sensor nachzieht
+    this._error = null;
+    this.shadowRoot.addEventListener("click", (ev) => {
+      const btn = ev.target.closest("[data-like]");
+      if (btn && !btn.disabled) {
+        ev.preventDefault();
+        this._toggleLike(btn.dataset.like);
+      }
+    });
+  }
+
+  async _toggleLike(statusId) {
+    const trip = this._trips().find((t) => String(t.status_id) === String(statusId));
+    if (!trip) return;
+    const cur = this._view(trip);
+    const want = !cur.liked;
+    const likes = typeof cur.likes === "number" ? Math.max(0, cur.likes + (want ? 1 : -1)) : cur.likes;
+    this._pending[statusId] = { liked: want, likes, busy: true };
+    this._error = null;
+    this._render();
+    try {
+      await this._hass.connection.sendMessagePromise({
+        type: "call_service",
+        domain: DOMAIN,
+        service: "like",
+        service_data: { status_id: Number(statusId), like: want },
+        return_response: true,
+      });
+      this._pending[statusId] = { liked: want, likes, busy: false };
+    } catch (err) {
+      delete this._pending[statusId];
+      this._error = err?.message || String(err);
+    }
+    this._render();
+  }
+
+  /** Sensorwerte + noch nicht bestätigte eigene Änderung. */
+  _view(t) {
+    const p = this._pending[t.status_id];
+    if (p && p.liked === Boolean(t.liked) && !p.busy) {
+      delete this._pending[t.status_id]; // Sensor ist nachgezogen
+      return t;
+    }
+    return p ? { ...t, liked: p.liked, likes: p.likes, busy: p.busy } : t;
   }
 
   setConfig(config) {
@@ -1201,7 +1245,16 @@ class TraewellingFriendsCard extends HTMLElement {
         .toUpperCase();
     const body = trips.length
       ? trips
-          .map((t) => {
+          .map((raw) => {
+            const t = this._view(raw);
+            const likeBtn =
+              t.status_id != null && t.likable !== false
+                ? `<button class="like ${t.liked ? "on" : ""}" data-like="${esc(t.status_id)}" ${t.busy ? "disabled" : ""}
+                     aria-pressed="${t.liked ? "true" : "false"}" title="${t.liked ? "Like zurücknehmen" : "Gefällt mir"}">
+                     <ha-icon icon="${t.liked ? "mdi:heart" : "mdi:heart-outline"}"></ha-icon>${
+                       typeof t.likes === "number" && t.likes > 0 ? `<span>${t.likes}</span>` : ""
+                     }</button>`
+                : "";
             const profile = t.profile_url || (t.username ? `https://traewelling.de/@${t.username}` : null);
             const avatar = t.avatar
               ? `<img class="avatar" src="${esc(t.avatar)}" alt="" loading="lazy">`
@@ -1213,6 +1266,7 @@ class TraewellingFriendsCard extends HTMLElement {
             <div class="friend">
               <div class="head">
                 ${profile ? `<a class="who grow" href="${esc(profile)}" target="_blank" rel="noopener">${who}</a>` : `<span class="who grow">${who}</span>`}
+                ${likeBtn}
                 ${t.url ? `<a class="chip" href="${esc(t.url)}" target="_blank" rel="noopener">Status</a>` : ""}
               </div>
               <div class="pad">${tripHtml({ ...t, points: null })}</div>
@@ -1220,7 +1274,8 @@ class TraewellingFriendsCard extends HTMLElement {
           })
           .join("")
       : `<div class="empty"><ha-icon icon="mdi:sofa-outline"></ha-icon><span>${esc(this._config.empty_text)}</span></div>`;
-    this.shadowRoot.innerHTML = `${STYLE}${FRIENDS_STYLE}<ha-card>${body}</ha-card>`;
+    const err = this._error ? `<div class="err">⚠️ ${esc(this._error)}</div>` : "";
+    this.shadowRoot.innerHTML = `${STYLE}${FRIENDS_STYLE}<ha-card>${body}${err}</ha-card>`;
   }
 }
 
@@ -1233,6 +1288,11 @@ const FRIENDS_STYLE = `<style>
   .names small { color: var(--secondary-text-color); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .avatar { width: 38px; height: 38px; border-radius: 50%; object-fit: cover; flex: none; background: var(--secondary-background-color); }
   .avatar.initials { display: flex; align-items: center; justify-content: center; background: var(--primary-color); color: var(--text-primary-color, #fff); font-weight: 700; font-size: .9em; }
+  .like { display: inline-flex; align-items: center; gap: 4px; padding: 6px 10px; border-radius: 18px; background: var(--secondary-background-color); color: var(--secondary-text-color); font-size: .9em; font-variant-numeric: tabular-nums; }
+  .like ha-icon { --mdc-icon-size: 18px; }
+  .like.on { color: #e91e63; background: rgba(233, 30, 99, .14); }
+  .like.on ha-icon { animation: pop .3s ease-out; }
+  @keyframes pop { 0% { transform: scale(.6); } 60% { transform: scale(1.25); } 100% { transform: scale(1); } }
   .empty { display: flex; align-items: center; gap: 12px; padding: 18px 16px; color: var(--secondary-text-color); }
   .empty ha-icon { color: var(--secondary-text-color); }
 </style>`;

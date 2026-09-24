@@ -122,6 +122,22 @@ class TraewellingCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # Bevorstehende eigene Fahrt
     # ------------------------------------------------------------------ #
 
+    def set_like(self, status_id: Any, liked: bool, likes: int | None) -> None:
+        """Like-Status einer Freundes-Fahrt sofort übernehmen (ohne Neuabfrage)."""
+        if not self.data:
+            return
+        friends = []
+        for trip in self.data.get("friends") or []:
+            if str(trip.get("status_id")) == str(status_id):
+                trip = {**trip, "liked": liked}
+                if likes is not None:
+                    trip["likes"] = likes
+                elif isinstance(trip.get("likes"), int):
+                    trip["likes"] = max(0, trip["likes"] + (1 if liked else -1))
+            friends.append(trip)
+        self.data = {**self.data, "friends": friends}
+        self.async_update_listeners()
+
     def remember_checkin(self, status: dict[str, Any]) -> None:
         """Frisch angelegten Check-in merken – sofort als „bald“ anzeigbar."""
         if isinstance(status, dict) and status.get("id") is not None:

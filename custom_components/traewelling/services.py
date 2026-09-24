@@ -87,6 +87,18 @@ CHECKIN_SCHEMA = vol.Schema(
         vol.Optional("ticket_id"): vol.Any(None, cv.string),
     }
 )
+LIKE_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_ENTRY): cv.string,
+        vol.Required("status_id"): vol.Coerce(int),
+        vol.Optional("like", default=True): cv.boolean,
+    }
+)
+LIKE_SCOPE_HINT = (
+    "Träwelling hat das Liken abgelehnt. Der Token braucht dafür den Scope "
+    "'write-likes' – neuen Token anlegen und unter Integration → ⋮ → Neu "
+    "konfigurieren eintragen."
+)
 TICKETS_SCHEMA = vol.Schema(
     {
         vol.Optional(ATTR_ENTRY): cv.string,
@@ -359,6 +371,31 @@ def async_setup_services(hass: HomeAssistant) -> None:
                 if isinstance(s, dict)
             ],
         }
+
+    async def like(call: ServiceCall) -> ServiceResponse:
+        """Status eines Freundes liken bzw. Like zurücknehmen."""
+        coord = _coordinator(hass, call)
+        status_id = call.data["status_id"]
+        want = call.data["like"]
+        try:
+            result = await coord.api.async_like(status_id, want)
+        except TraewellingAuthError as err:
+            raise HomeAssistantError(LIKE_SCOPE_HINT) from err
+        except TraewellingCheckinError:
+            result = {}  # 409 = war schon (nicht) geliked → Zielzustand ist erreicht
+        except TraewellingRateLimitError as err:
+            raise HomeAssistantError(
+                f"Träwelling bremst gerade (Rate-Limit). Bitte in {err.retry_after} s erneut versuchen."
+            ) from err
+        except TraewellingError as err:
+            raise HomeAssistantError(f"Like fehlgeschlagen: {err}") from err
+        count = result.get("count") if isinstance(result.get("count"), int) else None
+        coord.set_like(status_id, want, count)
+        return {"status_id": status_id, "liked": want, "likes": count}
+
+    hass.services.async_register(
+        DOMAIN, "like", like, LIKE_SCHEMA, supports_response=SupportsResponse.OPTIONAL,
+    )
 
     async def get_tickets(call: ServiceCall) -> ServiceResponse:
         """Am Tag gültige Fahrkarten + Vorschlag (zuletzt genutzte, falls gültig)."""

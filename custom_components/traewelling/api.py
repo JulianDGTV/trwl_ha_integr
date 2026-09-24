@@ -154,7 +154,13 @@ class TraewellingApi:
     async def _put(self, path: str, body: dict[str, Any]) -> Any:
         return await self._send("PUT", path, body)
 
-    async def _send(self, method: str, path: str, body: dict[str, Any]) -> Any:
+    async def _send(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None,
+        conflict_message: str | None = None,
+    ) -> Any:
         url = f"{self._base}/api/v1/{path.lstrip('/')}"
         headers = {
             "Authorization": f"Bearer {self._token}",
@@ -181,11 +187,12 @@ class TraewellingApi:
         if resp.status in (401, 403):
             raise TraewellingAuthError(
                 f"Nicht autorisiert ({resp.status}) für {path} – "
-                "der Token braucht den Scope 'write-statuses'"
+                "Token ungültig oder fehlender Scope"
             )
         if resp.status == 409:
             raise TraewellingCheckinError(
-                "Du bist in diesem Zeitraum schon in eine andere Fahrt eingecheckt."
+                conflict_message
+                or "Du bist in diesem Zeitraum schon in eine andere Fahrt eingecheckt."
             )
         if resp.status >= 400:
             message = None
@@ -350,3 +357,18 @@ class TraewellingApi:
     async def async_assign_ticket(self, status_id: int, ticket_id: str | None) -> Any:
         """PUT /statuses/{id}/tickets – Fahrkarte zuordnen (None = entfernen)."""
         return await self._put(f"statuses/{int(status_id)}/tickets", {"ticketId": ticket_id})
+
+    # ------------------------------------------------------------------ #
+    # Likes (Scope write-likes)
+    # ------------------------------------------------------------------ #
+
+    async def async_like(self, status_id: int, like: bool = True) -> dict[str, Any]:
+        """POST/DELETE /status/{id}/like – Status liken bzw. Like zurücknehmen."""
+        payload = await self._send(
+            "POST" if like else "DELETE",
+            f"status/{int(status_id)}/like",
+            None,
+            conflict_message="Diesen Status hast du schon geliked.",
+        )
+        data = self._data(payload)
+        return data if isinstance(data, dict) else {}
