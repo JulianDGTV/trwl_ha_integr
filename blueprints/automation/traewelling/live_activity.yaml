@@ -1,0 +1,154 @@
+blueprint:
+  name: Träwelling – laufende Fahrt als Live-Aktivität
+  description: >-
+    Zeigt deine laufende Träwelling-Fahrt auf dem Sperrbildschirm – als
+    Live-Aktivität auf dem iPhone (iOS 17.2+, auch in der Dynamic Island) bzw. als
+    Live Update auf Android (16+): Linie und Ziel, Abfahrt/Ankunft mit
+    Verspätung und Gleis, Fortschrittsbalken und ein live laufender Countdown bis
+    zur Ankunft. Endet die Fahrt, verschwindet die Anzeige wieder.
+    Voraussetzung: Home Assistant 2026.7 oder neuer und die Companion-App.
+  domain: automation
+  source_url: https://github.com/JulianDGTV/trwl_ha_integr/blob/main/blueprints/automation/traewelling/live_activity.yaml
+  input:
+    travelling:
+      name: Träwelling „Unterwegs“
+      description: Der Binärsensor „Unterwegs“ deines Träwelling-Kontos.
+      selector:
+        entity:
+          filter:
+            - integration: traewelling
+              domain: binary_sensor
+    notify_device:
+      name: Handy
+      description: Gerät mit der Home-Assistant-App, auf dem die Fahrt erscheinen soll.
+      selector:
+        device:
+          filter:
+            - integration: mobile_app
+    countdown:
+      name: Countdown bis zur Ankunft
+      description: >-
+        An: Auf dem iPhone läuft ein Live-Countdown bis zur Ankunft (die Strecke
+        steht dann nur im Titel). Aus: Strecke mit Zeiten, Verspätung und Gleis
+        als Text, Restzeit wird alle 10 min aktualisiert.
+      default: true
+      selector:
+        boolean:
+    tap_path:
+      name: Beim Antippen öffnen (optional)
+      description: >-
+        Dashboard-Pfad in Home Assistant, z. B. /dashboard-trwl/0. Leer =
+        Status auf traewelling.de.
+      default: ""
+      selector:
+        text:
+
+mode: queued
+max: 5
+max_exceeded: silent
+
+triggers:
+  - trigger: state
+    entity_id: !input travelling
+  - trigger: state
+    entity_id: !input travelling
+    attribute: status_id
+  - trigger: state
+    entity_id: !input travelling
+    attribute: departure_real
+  - trigger: state
+    entity_id: !input travelling
+    attribute: arrival_real
+  - trigger: state
+    entity_id: !input travelling
+    attribute: destination_platform
+  # Fortschrittsbalken nachziehen (der Countdown läuft von selbst). Seltener
+  # als alle 10 min lohnt nicht – iOS drosselt häufige Updates ohnehin.
+  - trigger: time_pattern
+    minutes: "/10"
+  - trigger: homeassistant
+    event: start
+
+variables:
+  entity: !input travelling
+  device: !input notify_device
+  tap_path: !input tap_path
+  countdown: !input countdown
+  notify: "notify.mobile_app_{{ device_attr(device, 'name') | slugify }}"
+  travelling_now: "{{ is_state(entity, 'on') }}"
+  sid: "{{ state_attr(entity, 'status_id') }}"
+  old_sid: >-
+    {{ trigger.from_state.attributes.status_id
+       if trigger is defined and trigger.from_state is defined and trigger.from_state
+       and trigger.from_state.attributes is defined else none }}
+  line: "{{ state_attr(entity, 'line') or 'Fahrt' }}"
+  category: "{{ state_attr(entity, 'category') or '' }}"
+  dep_p: "{{ as_timestamp(state_attr(entity, 'departure_planned'), 0) | int }}"
+  dep: "{{ as_timestamp(state_attr(entity, 'departure_real'), dep_p) | int }}"
+  arr_p: "{{ as_timestamp(state_attr(entity, 'arrival_planned'), 0) | int }}"
+  arr: "{{ as_timestamp(state_attr(entity, 'arrival_real'), arr_p) | int }}"
+  delay_dep: "{{ ((dep - dep_p) / 60) | round(0) | int if dep_p else 0 }}"
+  delay_arr: "{{ ((arr - arr_p) / 60) | round(0) | int if arr_p else 0 }}"
+  total: "{{ [arr - dep, 60] | max }}"
+  done: "{{ [[now().timestamp() | int - dep, 0] | max, total] | min }}"
+  color: >-
+    {% set c = category | lower %}
+    {% if 'national' in c or ('express' in c and 'regional' not in c) %}#ec0016
+    {% elif 'regional' in c %}#6a737d
+    {% elif 'suburban' in c %}#408335
+    {% elif 'subway' in c %}#1455c0
+    {% elif 'tram' in c %}#a9455d
+    {% elif 'bus' in c %}#814997
+    {% elif 'ferry' in c %}#309fd1
+    {% else %}#03a9f4{% endif %}
+  icon: >-
+    {% set c = category | lower %}
+    {{ 'mdi:bus' if 'bus' in c else 'mdi:tram' if 'tram' in c else 'mdi:subway-variant' if 'subway' in c
+       else 'mdi:ferry' if 'ferry' in c else 'mdi:airplane' if 'plane' in c else 'mdi:train' }}
+  message: >-
+    {{ dep_p | timestamp_custom('%H:%M') }}{{ ' +' ~ delay_dep if delay_dep > 0 else '' }}
+    {{ state_attr(entity, 'origin') }}{{ ' (Gl. ' ~ state_attr(entity, 'origin_platform') ~ ')' if state_attr(entity, 'origin_platform') else '' }}
+    → {{ arr_p | timestamp_custom('%H:%M') }}{{ ' +' ~ delay_arr if delay_arr > 0 else '' }}
+    {{ state_attr(entity, 'destination') }}{{ ' (Gl. ' ~ state_attr(entity, 'destination_platform') ~ ')' if state_attr(entity, 'destination_platform') else '' }}
+    {{ '' if countdown else '· noch ' ~ ((arr - now().timestamp()) / 60) | round(0) | int ~ ' min' }}
+  status_text: >-
+    {{ '+' ~ delay_arr ~ ' min' if delay_arr > 0 else 'pünktlich' if state_attr(entity, 'arrival_real') else '' }}
+  url: >-
+    {{ tap_path if tap_path else 'https://traewelling.de/status/' ~ sid }}
+
+actions:
+  # Vorherige Fahrt (Anschluss gewechselt bzw. Fahrt beendet) vom Sperrbildschirm nehmen.
+  - if:
+      - condition: template
+        value_template: "{{ old_sid not in [none, '', sid] }}"
+    then:
+      - action: "{{ notify }}"
+        data:
+          message: clear_notification
+          data:
+            tag: "trwl_{{ old_sid }}"
+  - if:
+      - condition: template
+        value_template: "{{ travelling_now and sid is not none and arr > now().timestamp() }}"
+    then:
+      - action: "{{ notify }}"
+        data:
+          title: "{{ line }} → {{ state_attr(entity, 'destination') }}"
+          message: "{{ message }}"
+          data:
+            tag: "trwl_{{ sid }}"
+            live_update: true
+            progress: "{{ done }}"
+            progress_max: "{{ total }}"
+            chronometer: "{{ countdown }}"
+            when: "{{ arr }}"
+            critical_text: "{{ status_text }}"
+            notification_icon: "{{ icon }}"
+            notification_icon_color: "{{ color }}"
+            color: "{{ color }}"
+            progress_bar_color: "{{ color }}"
+            silent: true
+            alert_once: true
+            sticky: true
+            url: "{{ url }}"
+            clickAction: "{{ url }}"
