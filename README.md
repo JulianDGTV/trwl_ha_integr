@@ -7,7 +7,7 @@ aus dem Dashboard.
 ## ✨ Features
 
 - **Meine Fahrt** – Linie, Start/Ziel, Zeiten, Verspätung, Gleis, Fortschritt, Restzeit
-- **Nächste Fahrt** – eingecheckte Fahrten, die in der nächsten Stunde starten, erscheinen als „Bald unterwegs“; während einer Fahrt als „Danach: …“
+- **Nächste Fahrt & Anschlüsse** – eingecheckte Fahrten, die in der nächsten Stunde starten, erscheinen als „Bald unterwegs“; dahinter die ganze eingecheckte Reisekette (Anschluss → Anschluss → …) mit Live-Umstiegszeiten aus Plan- und Echtzeitdaten
 - **Freunde unterwegs** – alle gerade laufenden Fahrten der Accounts, denen du folgst, mit Link zum Profil
 - **Check-in-Karte** – Station suchen (oder per Standort), Live-Abfahrten mit Verspätung und Gleis, Ausstieg wählen, Fahrkarte (z. B. BahnCard 100) hinterlegen, einchecken – auch als Anschluss während einer laufenden Fahrt
 - **Freunde-Karte** – laufende Fahrten deiner Freunde im selben Design wie die eigene Fahrt, Name antippen → Profil, ❤️ Like direkt aus der Karte
@@ -68,9 +68,12 @@ Einstellungen → Geräte & Dienste → Träwelling → ⋮ → **Neu konfigurie
 
 | Entität endet auf | Beschreibung |
 |---|---|
-| `…_nachste_fahrt` | Abfahrtszeit deiner nächsten eingecheckten Fahrt (innerhalb 1 h); Details wie bei der aktiven Fahrt als Attribute, dazu `minutes_until` und `after_current` |
+| `…_nachste_fahrt` | Abfahrtszeit deiner nächsten eingecheckten Fahrt (während einer Fahrt: der erste Anschluss, sonst innerhalb 1 h); Details wie bei der aktiven Fahrt als Attribute, dazu `minutes_until`, `after_current`, `chain` (alle Anschlüsse inkl. `transfer`), `transfers`, `final_destination`, `final_arrival` |
+| `…_nachster_umstieg` | Minuten für den nächsten Umstieg nach Echtzeit; Attribute `minutes_planned`, `rating` (`ok`, `tight`, `risk`, `missed`, `cancelled`), `station`, `arrival_platform`, `departure_platform`, `to_station`/`walk_m` (bei Stationswechsel), `from_line`, `to_line` |
 
-Quellen: eigene Status im Dashboard (bis ~20 min voraus), `/dashboard/future` (alle 5 min, >20 min voraus) und jeder Check-in über die Karte, der sofort übernommen wird. Solange eine andere Fahrt noch läuft, bleibt diese die Hauptanzeige.
+**Reisekette:** Nach der laufenden Fahrt (bzw. der nächsten Fahrt) sucht die Integration den frühesten eigenen Check-in, der nach der planmäßigen Ankunft startet (max. 3 h später) – und von dort den nächsten usw. Umstiegszeiten werden aus Ankunft und Abfahrt berechnet (manuell > Echtzeit > Plan). Bei verschiedenen Stationen (z. B. Hbf → ZOB) wird die Luftlinie als Fußweg eingerechnet.
+
+Quellen: eigene Status im Dashboard (bis ~20 min voraus, jede Minute mit Echtzeit), `/dashboard/future` (alle 5 min, >20 min voraus – Träwelling holt Echtzeit ohnehin erst ab 20 min vor Abfahrt) und jeder Check-in über die Karte, der sofort übernommen wird. Fehlt eine Fahrt kurz vor Abfahrt im Dashboard (z. B. vor über 7 Tagen eingecheckt), wird sie einzeln über `/status/{id}` nachgeladen. Gelöschte Check-ins verschwinden automatisch. Solange eine andere Fahrt noch läuft, bleibt diese die Hauptanzeige.
 
 **Freunde unterwegs** (zusammen mit der aktiven Fahrt abgefragt)
 
@@ -139,7 +142,7 @@ location_entity: device_tracker.mein_handy            # Standortquelle, sonst au
 3. **Abfahrt gewählt** → alle folgenden Halte mit Ankunftszeiten
 4. **Ausstieg gewählt** → Statustext, Fahrkarte, Sichtbarkeit und Reiseart, dann „Jetzt einchecken“
 5. **Bald unterwegs** → steht eine eingecheckte Fahrt in der nächsten Stunde an, zeigt die Karte sie mit „Abfahrt in X min“
-6. **Unterwegs** → die Karte zeigt deine laufende Fahrt mit Fortschrittsbalken, der nächsten Fahrt („Danach: …“) und dem Button „Anschluss einchecken“
+6. **Unterwegs** → die Karte zeigt deine laufende Fahrt mit Fortschrittsbalken, der nächsten Fahrt (allen eingecheckten Anschlüssen samt Umstiegszeit (grün/gelb/rot, ● = Echtzeit) und dem Button „Anschluss ab … einchecken“ – der öffnet direkt die Abfahrten am Ziel der letzten Fahrt ab deren Ankunftszeit
 
 **Fahrkarte:** Die Karte listet deine Träwelling-Fahrkarten, die am Reisetag gültig sind, und schlägt die zuletzt genutzte vor – solange sie noch gültig ist. Abgelaufene Fahrkarten tauchen nicht auf. Hast du keine Fahrkarten angelegt, bleibt das Feld ausgeblendet.
 
@@ -355,6 +358,20 @@ automation:
       - action: light.turn_on
         target:
           entity_id: light.flur
+
+  - alias: "Warnung, wenn der Anschluss wackelt"
+    triggers:
+      - trigger: state
+        entity_id: sensor.traewelling_nachster_umstieg
+        attribute: rating
+        to: [risk, missed, cancelled]
+    actions:
+      - action: notify.notify
+        data:
+          message: >-
+            Umstieg in {{ state_attr('sensor.traewelling_nachster_umstieg', 'station') }}:
+            nur noch {{ states('sensor.traewelling_nachster_umstieg') }} min bis
+            {{ state_attr('sensor.traewelling_nachster_umstieg', 'to_line') }}.
 ```
 
 Entity-IDs an deine Installation anpassen.
@@ -366,7 +383,8 @@ Entity-IDs an deine Installation anpassen.
 | `GET /api/v1/auth/user` | – |
 | `GET /api/v1/user/statuses/active` (404 = keine Fahrt) | `read-statuses` |
 | `GET /api/v1/dashboard` | `read-statuses` |
-| `GET /api/v1/dashboard/future` | `read-statuses` |
+| `GET /api/v1/dashboard/future` (bis 3 Seiten) | `read-statuses` |
+| `GET /api/v1/status/{id}` (nur Anschlüsse <20 min, die im Dashboard fehlen) | `read-statuses` |
 | `GET /api/v1/statistics/overview`, `/statistics/history`, `/statistics/favorites`, `/statistics` | `read-statistics` |
 | `GET /api/v1/leaderboard/friends` | `read-statistics` |
 | `GET /api/v1/trains/station/autocomplete/{query}`, `/nearby`, `/history` | `write-statuses` |
@@ -380,7 +398,7 @@ Entity-IDs an deine Installation anpassen.
 ## 🤝 Fair Use
 
 Träwelling erlaubt maximal 500 Anfragen pro 5 Minuten. Die Integration braucht im
-Normalbetrieb etwa 13–17: aktive Fahrt und Freunde jeden Poll, geplante Fahrten
+Normalbetrieb etwa 13–20: aktive Fahrt und Freunde jeden Poll (kurz vor einem Anschluss ggf. 1–3 Einzelabfragen), geplante Fahrten
 alle 5 Minuten, die Statistik alle 60 Minuten nacheinander mit 3 s Abstand. Der
 Monatsverlauf wird einmalig nachgeladen (bis zu 11 Anfragen, ebenfalls mit Abstand)
 und danach gespeichert. Freunde- und Statistik-Karte lesen nur die Sensoren und
@@ -388,11 +406,13 @@ stellen keine eigenen Anfragen; die Check-in-Karte nur, während du sie bedienst
 Integration alle Anfragen für die Dauer aus `Retry-After` (ohne Angabe: 60 s).
 
 Alle Anfragen tragen den User-Agent
-`trwl-ha-integration/<version> (Home Assistant; +https://github.com/JulianDGTV/trwl_ha_integr)`.
+`trwl-ha-integration/<version> (Home Assistant; +https://github.com/JulianDGTV/trwl_ha_integr; @<dein-username>)`.
+Der Träwelling-Account steht auf Wunsch der Träwelling-Betreiber mit drin, damit sie Anfragen einem Nutzer zuordnen können.
 
 ## 🩺 Fehlersuche
 
 - **Check-in-Karte meldet „Zugriff abgelehnt“** → Token ohne `write-statuses`; neuen Token anlegen und über *Neu konfigurieren* eintragen.
+- **Neue Funktionen fehlen nur in der Handy-App** (z. B. der ❤️-Button) → die App hält eine alte Version der Karte im Zwischenspeicher: in der App unter Einstellungen → Companion App → Fehlerbehebung/Debugging „Frontend-Cache zurücksetzen“ (oder App komplett schließen und neu öffnen).
 - **Karte „Custom element doesn't exist“** → Home Assistant nach dem Update neu starten und die Seite neu laden (Browser-Cache).
 - **Statistik-Werte fehlen** → der Token braucht `read-statistics`; Träwelling cacht die Werte bis zu 6 h.
 - **Debug-Logging:**
@@ -405,6 +425,8 @@ logger:
 
 ## 📝 Changelog
 
+- **1.8.0** – 🔗 Mehrere Anschlüsse: die ganze eingecheckte Reisekette wird angezeigt (Anschluss → Anschluss → …), nicht mehr nur der nächste · ⏱️ Live-Umstiegszeiten zwischen den Fahrten aus Plan- und Echtzeitdaten mit Einschätzung (ok / knapp / gefährdet / verpasst / fällt aus), Gleiswechsel und Fußweg bei Stationswechsel · 🆕 Sensor „Nächster Umstieg“ · 🔁 „Anschluss ab … einchecken“ öffnet direkt die Abfahrten am Ziel der letzten Fahrt ab Ankunftszeit · 🧹 Gelöschte Check-ins verschwinden automatisch · 📄 `/dashboard/future` wird geblättert (die nächsten Fahrten stehen dort hinten)
+- **1.7.2** – 🪪 User-Agent enthält jetzt den Träwelling-Account (@username), auf Wunsch der Träwelling-Betreiber
 - **1.7.1** – 🐛 Abfahrten laden wieder an Haltestellen ohne Fernverkehr: Verkehrsmittel-Filter wird nicht mehr gespeichert und fällt bei Fehlern automatisch auf „Alle“ zurück · 💬 Lesbare Fehlermeldungen von Träwelling (Umlaute, ohne JSON)
 - **1.7.0** – ❤️ Freunden direkt aus der Freunde-Karte Likes geben (Scope `write-likes`) · 🛠️ Service `traewelling.like`
 - **1.6.2** – 🧩 Statistik-Karte lässt sich in einzelne Bausteine aufteilen (`show`, `header`) · 🖥️ Dashboard-Vorlage mit vielen kleinen Karten statt einer langen
