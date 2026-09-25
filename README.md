@@ -1,4 +1,4 @@
-# 🚆 Träwelling für Home Assistant
+# 🚆 Träwelling für Home Assistant · v1.8.2
 
 Custom Integration für [traewelling.de](https://traewelling.de): deine laufende
 Fahrt, die Fahrten deiner Freunde, deine Reisestatistiken – und Check-in direkt
@@ -8,9 +8,9 @@ aus dem Dashboard.
 
 - **Meine Fahrt** – Linie, Start/Ziel, Zeiten, Verspätung, Gleis, Fortschritt, Restzeit
 - **Nächste Fahrt & Anschlüsse** – eingecheckte Fahrten, die in der nächsten Stunde starten, erscheinen als „Bald unterwegs“; dahinter die ganze eingecheckte Reisekette (Anschluss → Anschluss → …) mit Live-Umstiegszeiten aus Plan- und Echtzeitdaten
-- **Freunde unterwegs** – alle gerade laufenden Fahrten der Accounts, denen du folgst, mit Link zum Profil
+- **Freunde unterwegs** – alle gerade laufenden und bald startenden Fahrten der Accounts, denen du folgst, mit Link zum Profil
 - **Check-in-Karte** – Station suchen (oder per Standort), Live-Abfahrten mit Verspätung und Gleis, Ausstieg wählen, Fahrkarte (z. B. BahnCard 100) hinterlegen, einchecken – auch als Anschluss während einer laufenden Fahrt
-- **Freunde-Karte** – laufende Fahrten deiner Freunde im selben Design wie die eigene Fahrt, Name antippen → Profil, ❤️ Like direkt aus der Karte
+- **Freunde-Karte** – laufende und bald startende Fahrten deiner Freunde im selben Design wie die eigene Fahrt („in 15 min“, „Danach: …“), Name antippen → Profil, ❤️ Like direkt aus der Karte
 - **Statistik-Karte** – Kennzahlen für Woche, Monat, Jahr und gesamt, Balkendiagramm der letzten 12 Monate (Check-ins/km), längste Fahrt, Favoriten, Freunde-Rangliste
 - **Favoriten** – Lieblingsstationen, -linien und -strecken des laufenden Jahres (in der Statistik-Karte)
 - **Freunde-Rangliste** – dein Rang unter Freunden (Punkte der letzten 7 Tage)
@@ -68,10 +68,12 @@ Einstellungen → Geräte & Dienste → Träwelling → ⋮ → **Neu konfigurie
 
 | Entität endet auf | Beschreibung |
 |---|---|
-| `…_nachste_fahrt` | Abfahrtszeit deiner nächsten eingecheckten Fahrt (während einer Fahrt: der erste Anschluss, sonst innerhalb 1 h); Details wie bei der aktiven Fahrt als Attribute, dazu `minutes_until`, `after_current`, `chain` (alle Anschlüsse inkl. `transfer`), `transfers`, `final_destination`, `final_arrival` |
-| `…_nachster_umstieg` | Minuten für den nächsten Umstieg nach Echtzeit; Attribute `minutes_planned`, `rating` (`ok`, `tight`, `risk`, `missed`, `cancelled`), `station`, `arrival_platform`, `departure_platform`, `to_station`/`walk_m` (bei Stationswechsel), `from_line`, `to_line` |
+| `…_nachste_fahrt` | Abfahrtszeit deiner nächsten eingecheckten Fahrt (während einer Fahrt: der erste Anschluss, sonst innerhalb 1 h); Details wie bei der aktiven Fahrt als Attribute, dazu `minutes_until`, `after_current`, `chain` (alle Anschlüsse inkl. `transfer`), `transfers`, `warnings`, `final_destination`, `final_arrival` |
+| `…_nachster_umstieg` | Minuten für den nächsten Umstieg nach Echtzeit; Attribute `minutes_planned`, `rating` (`ok`, `tight`, `risk`, `missed`, `cancelled`, `unknown` = Anschluss ohne Echtzeit, `conflict` = laut Fahrplan unmöglich), `warning` (Klartext), `arrival_source`/`departure_source` (`live`, `board`, `estimate`, `manual`, `plan`), `station`, `arrival_platform`, `departure_platform`, `to_station`/`walk_m` (bei Stationswechsel), `from_line`, `to_line` |
 
 **Reisekette:** Nach der laufenden Fahrt (bzw. der nächsten Fahrt) sucht die Integration den frühesten eigenen Check-in, der nach der planmäßigen Ankunft startet (max. 3 h später) – und von dort den nächsten usw. Umstiegszeiten werden aus Ankunft und Abfahrt berechnet (manuell > Echtzeit > Plan). Bei verschiedenen Stationen (z. B. Hbf → ZOB) wird die Luftlinie als Fußweg eingerechnet.
+
+**Warnungen:** Knappe, gefährdete, verpasste oder ausgefallene Umstiege werden markiert, ebenso „unlogische“ Check-ins, die laut Fahrplan schon vor der Ankunft abfahren – die Kette läuft trotzdem weiter und zeigt alle folgenden Fahrten. Hat die Ankunft Echtzeit (verspätet), der Anschluss aber nicht, wird er nicht als verpasst gewertet, sondern als „unklar“. Dann holt die Integration die Echtzeit des Anschlusses von der Live-Abfahrtstafel der Umstiegsstation (je Anschluss höchstens alle 3 min). Fährt ein Anschluss verspätet ab, wird seine Ankunft mit derselben Verspätung geschätzt (`~+55`).
 
 Quellen: eigene Status im Dashboard (bis ~20 min voraus, jede Minute mit Echtzeit), `/dashboard/future` (alle 5 min, >20 min voraus – Träwelling holt Echtzeit ohnehin erst ab 20 min vor Abfahrt) und jeder Check-in über die Karte, der sofort übernommen wird. Fehlt eine Fahrt kurz vor Abfahrt im Dashboard (z. B. vor über 7 Tagen eingecheckt), wird sie einzeln über `/status/{id}` nachgeladen. Gelöschte Check-ins verschwinden automatisch. Solange eine andere Fahrt noch läuft, bleibt diese die Hauptanzeige.
 
@@ -79,15 +81,20 @@ Quellen: eigene Status im Dashboard (bis ~20 min voraus, jede Minute mit Echtzei
 
 | Entität endet auf | Beschreibung |
 |---|---|
-| `…_freunde_unterwegs` | Anzahl der Freunde, die gerade fahren |
+| `…_freunde_unterwegs` | Anzahl der Freunde, die gerade fahren oder bald losfahren; Attribute `travelling` (fahren gerade) und `soon` (starten bald) |
 
 „Freunde“ sind alle Accounts, denen du folgst (Quelle `/dashboard`, inkl.
 privater Profile, die dich zugelassen haben). Das Attribut `trips` enthält pro
-Person die laufende Fahrt, nach Ankunft sortiert:
+Person die laufende Fahrt (nach Ankunft sortiert), danach Fahrten, die bald
+starten (nach Abfahrt). Träwelling liefert fremde Check-ins erst ca. 20 min vor
+Abfahrt im Dashboard – früher tauchen Freunde also nicht auf. Wer gerade fährt
+und den Anschluss schon eingecheckt hat, bekommt ihn als `next`
+(`line`, `origin`, `destination`, `departure`, `minutes_until`, …).
 
 | Feld | Inhalt |
 |---|---|
 | `name`, `username`, `avatar`, `profile_url` | Anzeigename, Benutzername, Profilbild, Link zum Profil |
+| `upcoming`, `minutes_until` | `true`, solange die Fahrt noch nicht begonnen hat; Minuten bis zur Abfahrt |
 | `likes`, `liked`, `likable` | Anzahl Likes, ob du schon geliked hast, ob Liken erlaubt ist |
 | `line`, `category` | Linie und Verkehrsmittel |
 | `origin`, `destination` | Start- und Zielhaltestelle |
@@ -168,7 +175,7 @@ entity: sensor.trawelling_deinname_freunde_unterwegs   # sonst automatisch
 empty_text: Gerade ist niemand unterwegs.
 ```
 
-Pro Freund: Profilbild und Name (→ Profil), Linie, Start und Ziel mit Zeiten, Verspätung und Gleis, Fortschrittsbalken und Restzeit, Link zum Status und ein ❤️-Button mit Like-Zahl. Das Herz reagiert sofort; klappt das Liken nicht (z. B. Scope `write-likes` fehlt), springt es zurück und die Karte zeigt den Grund.
+Pro Freund: Profilbild und Name (→ Profil), Linie, Start und Ziel mit Zeiten, Verspätung und Gleis, Fortschrittsbalken und Restzeit – bei Fahrten, die bald starten, wie bei deinen eigenen „in 15 min“ und „Abfahrt in …“; ist der Anschluss schon eingecheckt, „Danach: …“ – Link zum Status und ein ❤️-Button mit Like-Zahl. Das Herz reagiert sofort; klappt das Liken nicht (z. B. Scope `write-likes` fehlt), springt es zurück und die Karte zeigt den Grund.
 Der Token bleibt dabei in Home Assistant – die Karte spricht nur mit den
 Services der Integration.
 
@@ -334,15 +341,16 @@ automation:
     triggers:
       - trigger: state
         entity_id: sensor.traewelling_freunde_unterwegs
+        attribute: travelling
     conditions:
       - condition: template
         value_template: >-
-          {{ trigger.to_state.state | int(0) > trigger.from_state.state | int(0) }}
+          {{ trigger.to_state.attributes.travelling | int(0) > trigger.from_state.attributes.travelling | int(0) }}
     actions:
       - action: notify.notify
         data:
           message: >-
-            {% set t = state_attr('sensor.traewelling_freunde_unterwegs', 'trips') | sort(attribute='departure') | last %}
+            {% set t = state_attr('sensor.traewelling_freunde_unterwegs', 'trips') | rejectattr('upcoming') | sort(attribute='departure') | last %}
             {{ t.name }} fährt gerade {{ t.line }} von {{ t.origin }} nach {{ t.destination }}.
 
   - alias: "Licht an, wenn Zug bald ankommt"
@@ -388,7 +396,7 @@ Entity-IDs an deine Installation anpassen.
 | `GET /api/v1/statistics/overview`, `/statistics/history`, `/statistics/favorites`, `/statistics` | `read-statistics` |
 | `GET /api/v1/leaderboard/friends` | `read-statistics` |
 | `GET /api/v1/trains/station/autocomplete/{query}`, `/nearby`, `/history` | `write-statuses` |
-| `GET /api/v1/station/{id}/departures` | `write-statuses` |
+| `GET /api/v1/station/{id}/departures` (auch für Echtzeit verspäteter Anschlüsse) | `write-statuses` |
 | `GET /api/v1/trains/trip` | `write-statuses` |
 | `POST /api/v1/trains/checkin` | `write-statuses` |
 | `GET /api/v1/tickets?validOn=` | – |
@@ -398,7 +406,7 @@ Entity-IDs an deine Installation anpassen.
 ## 🤝 Fair Use
 
 Träwelling erlaubt maximal 500 Anfragen pro 5 Minuten. Die Integration braucht im
-Normalbetrieb etwa 13–20: aktive Fahrt und Freunde jeden Poll (kurz vor einem Anschluss ggf. 1–3 Einzelabfragen), geplante Fahrten
+Normalbetrieb etwa 13–20: aktive Fahrt und Freunde jeden Poll (kurz vor einem Anschluss ggf. 1–3 Einzelabfragen, bei Verspätung die Abfahrtstafel je Anschluss alle 3 min), geplante Fahrten
 alle 5 Minuten, die Statistik alle 60 Minuten nacheinander mit 3 s Abstand. Der
 Monatsverlauf wird einmalig nachgeladen (bis zu 11 Anfragen, ebenfalls mit Abstand)
 und danach gespeichert. Freunde- und Statistik-Karte lesen nur die Sensoren und
@@ -425,6 +433,8 @@ logger:
 
 ## 📝 Changelog
 
+- **1.8.2** – 👥 Freunde, die bald losfahren, erscheinen schon in der Freunde-Karte – mit „in 15 min“ und „Abfahrt in …“ wie bei deinen eigenen Fahrten · „Danach: …“, wenn ein Freund den Anschluss schon eingecheckt hat · Sensor „Freunde unterwegs“ mit `travelling` und `soon` · 🏷️ Versionsnummer im README-Titel
+- **1.8.1** – ⚠️ Warnungen bei knappen, gefährdeten, verpassten und „unlogischen“ Anschlüssen (Banner + Hinweis am Umstieg), die folgenden Fahrten bleiben sichtbar · ❔ Verspätete Ankunft + Anschluss ohne Echtzeit = „unklar“ statt „verpasst“ · 📡 Echtzeit für solche Anschlüsse von der Live-Abfahrtstafel · 🔮 Ankunft wird aus der Abfahrtsverspätung geschätzt · 🔗 Große Verspätungen lassen die Kette nicht mehr abreißen
 - **1.8.0** – 🔗 Mehrere Anschlüsse: die ganze eingecheckte Reisekette wird angezeigt (Anschluss → Anschluss → …), nicht mehr nur der nächste · ⏱️ Live-Umstiegszeiten zwischen den Fahrten aus Plan- und Echtzeitdaten mit Einschätzung (ok / knapp / gefährdet / verpasst / fällt aus), Gleiswechsel und Fußweg bei Stationswechsel · 🆕 Sensor „Nächster Umstieg“ · 🔁 „Anschluss ab … einchecken“ öffnet direkt die Abfahrten am Ziel der letzten Fahrt ab Ankunftszeit · 🧹 Gelöschte Check-ins verschwinden automatisch · 📄 `/dashboard/future` wird geblättert (die nächsten Fahrten stehen dort hinten)
 - **1.7.2** – 🪪 User-Agent enthält jetzt den Träwelling-Account (@username), auf Wunsch der Träwelling-Betreiber
 - **1.7.1** – 🐛 Abfahrten laden wieder an Haltestellen ohne Fernverkehr: Verkehrsmittel-Filter wird nicht mehr gespeichert und fällt bei Fehlern automatisch auf „Alle“ zurück · 💬 Lesbare Fehlermeldungen von Träwelling (Umlaute, ohne JSON)
