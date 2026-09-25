@@ -16,7 +16,7 @@
  */
 
 const DOMAIN = "traewelling";
-const VERSION = "1.7.1";
+const VERSION = "1.8.0";
 
 const TYPES = [
   ["", "Alle"],
@@ -160,6 +160,71 @@ function tripHtml(t, opts = {}) {
         <div class="knob" style="left:${p.toFixed(1)}%"><ha-icon icon="${modeIcon(t.category)}"></ha-icon></div>
       </div>`}
       <div class="meta">${meta}</div>
+    </div>`;
+}
+
+const XFER = {
+  ok: ["mdi:swap-horizontal", "Umstieg", "ok"],
+  tight: ["mdi:run-fast", "Knapp", "warn"],
+  risk: ["mdi:alert", "Gefährdet", "bad"],
+  missed: ["mdi:alert-octagon", "Verpasst?", "bad"],
+  cancelled: ["mdi:cancel", "Fällt aus", "bad"],
+};
+
+/** Umstieg zwischen zwei Fahrten (Minuten nach Echtzeit, Plan in Klammern). */
+function transferHtml(x) {
+  if (!x) return "";
+  const [icon, label, cls] = XFER[x.rating] || XFER.ok;
+  const min = typeof x.minutes === "number" ? x.minutes : null;
+  const mins = min === null ? "" : `${min < 0 ? "−" : ""}${Math.abs(min)} min`;
+  const plan =
+    typeof x.minutes_planned === "number" && x.minutes_planned !== min
+      ? `<s title="laut Fahrplan ${x.minutes_planned} min">${x.minutes_planned}</s>`
+      : "";
+  const where = x.same_station === false && x.to_station
+    ? `🚶 ${x.walk_m ? `${x.walk_m >= 1000 ? `${(x.walk_m / 1000).toLocaleString("de-DE", { maximumFractionDigits: 1 })} km` : `${x.walk_m} m`} → ` : "→ "}${esc(x.to_station)}`
+    : x.arrival_platform || x.departure_platform
+      ? `Gl. ${esc(x.arrival_platform || "?")} → ${esc(x.departure_platform || "?")}`
+      : esc(x.station || "");
+  return `
+    <div class="xfer ${cls}">
+      <ha-icon icon="${icon}"></ha-icon>
+      <span class="xl"><b>${label}</b>${mins ? ` · <b>${mins}</b>` : ""}${plan ? ` ${plan}` : ""}</span>
+      <span class="xw">${where}</span>
+      ${x.live ? `<span class="xlive" title="Echtzeit">●</span>` : ""}
+    </div>`;
+}
+
+/** Kompakte Zeile für einen Anschluss. */
+function legHtml(t) {
+  const depP = toDate(t.departure_planned);
+  const arrP = toDate(t.arrival_planned);
+  const dDep = delayMin(t.departure_planned, t.departure_real);
+  const dArr = delayMin(t.arrival_planned, t.arrival_real);
+  const [bg, fg] = lineColor({ product: t.category });
+  const dep = toDate(t.departure_real) || depP;
+  const until = dep ? Math.round((dep - new Date()) / 60000) : null;
+  return `
+    <div class="leg ${t.cancelled ? "cancelled" : ""}" style="--line:${esc(bg)};--line-fg:${esc(fg)}">
+      <span class="badge">${esc(t.line || "Fahrt")}</span>
+      <div class="leg-main">
+        <div class="leg-l"><b>${hhmm(depP)}</b>${dDep > 0 ? `<span class="d">+${dDep}</span>` : ""}
+          <span class="nm">${esc(t.origin)}</span>${t.origin_platform ? `<span class="plat">Gl. ${esc(t.origin_platform)}</span>` : ""}</div>
+        <div class="leg-l sub2"><span>${hhmm(arrP)}</span>${dArr > 0 ? `<span class="d">+${dArr}</span>` : ""}
+          <span class="nm">${esc(t.destination)}</span>${until !== null && until > 0 && until < 120 ? `<span class="in">in ${until} min</span>` : ""}</div>
+      </div>
+    </div>`;
+}
+
+/** Anschlusskette: Umstieg → Fahrt → Umstieg → Fahrt … */
+function chainHtml(legs, title) {
+  if (!legs?.length) return "";
+  const last = legs[legs.length - 1];
+  const arr = toDate(last.arrival_real) || toDate(last.arrival_planned);
+  return `
+    <div class="chain">
+      <div class="chain-h"><span>${esc(title)}</span>${arr ? `<span>an ${esc(last.destination)} ${hhmm(arr)}</span>` : ""}</div>
+      ${legs.map((l) => `${transferHtml(l.transfer)}${legHtml(l)}`).join("")}
     </div>`;
 }
 
@@ -311,7 +376,7 @@ class TraewellingCheckinCard extends HTMLElement {
     const up = this._upcomingState();
     return [
       st ? `${st.state}|${st.attributes.status_id || ""}|${st.attributes.arrival_real || ""}` : "none",
-      up ? `${up.attributes.status_id}|${up.state}|${up.attributes.departure_real || ""}` : "-",
+      up ? `${up.attributes.status_id}|${up.state}|${up.last_updated || ""}` : "-",
     ].join("#");
   }
 
@@ -640,8 +705,7 @@ class TraewellingCheckinCard extends HTMLElement {
         this._nearby();
         break;
       case "connection":
-        this._s.whileTravelling = true;
-        this._render();
+        this._startConnection();
         break;
       case "type":
         this._s.travelType = el.dataset.v;
@@ -987,12 +1051,44 @@ class TraewellingCheckinCard extends HTMLElement {
       </div>`;
   }
 
-  _nextHint() {
-    const u = this._upcomingState()?.attributes;
-    if (!u) return "";
-    const dep = toDate(u.departure_planned);
-    return `<div class="next"><ha-icon icon="mdi:arrow-right-bottom"></ha-icon>
-      <span>Danach: <b>${esc(u.line || "Fahrt")}</b> um <b>${hhmm(dep)}</b> ab ${esc(u.origin)}${u.origin_platform ? ` · Gl. ${esc(u.origin_platform)}` : ""} → ${esc(u.destination)}</span></div>`;
+  /** Alle eingecheckten Anschlüsse (Sensor „Nächste Fahrt“, Attribut chain). */
+  _chain() {
+    const a = this._upcomingState()?.attributes;
+    if (!a) return [];
+    if (Array.isArray(a.chain) && a.chain.length) return a.chain;
+    return [{ ...a, transfer: null }]; // ältere Integration ohne Kette
+  }
+
+  /** Letzte Fahrt der Kette (bzw. die laufende) – dort geht es weiter. */
+  _lastLeg() {
+    const chain = this._isTravelling() || this._upcomingState() ? this._chain() : [];
+    if (chain.length) return chain[chain.length - 1];
+    return this._isTravelling() ? this._travelState()?.attributes : null;
+  }
+
+  _connectionLabel() {
+    const l = this._lastLeg();
+    return l?.destination ? `Anschluss ab ${esc(l.destination)} einchecken` : "Anschluss einchecken";
+  }
+
+  /** Check-in direkt an der Ankunftsstation zur Ankunftszeit starten. */
+  async _startConnection() {
+    this._s.whileTravelling = true;
+    const l = this._lastLeg();
+    const id = l?.destination_station_id;
+    if (id == null) {
+      this._render();
+      return;
+    }
+    const arr = toDate(l.arrival_real) || toDate(l.arrival_planned);
+    this._s.station = { id, name: l.destination };
+    this._s.when = arr && arr > new Date() ? arr.toISOString() : null;
+    this._s.travelType = "";
+    this._s.filterHint = null;
+    this._s.locationHint = arr ? `🔁 Anschluss nach Ankunft um ${hhmm(arr)}` : null;
+    this._s.step = "departures";
+    await this._run(() => this._loadDepartures());
+    this._startLiveRefresh();
   }
 
   _renderUpcoming() {
@@ -1008,8 +1104,9 @@ class TraewellingCheckinCard extends HTMLElement {
       </div>
       <div class="pad">
         ${tripHtml(a, { upcoming: true })}
+        ${chainHtml(this._chain().slice(1), "Danach")}
         <button class="chip wide" data-a="connection">
-          <ha-icon icon="mdi:plus"></ha-icon> Weitere Fahrt einchecken
+          <ha-icon icon="mdi:plus"></ha-icon><span class="ell">${this._connectionLabel()}</span>
         </button>
       </div>`;
   }
@@ -1024,9 +1121,9 @@ class TraewellingCheckinCard extends HTMLElement {
       </div>
       <div class="pad">
         ${tripHtml(a)}
-        ${this._nextHint()}
+        ${this._upcomingState() ? chainHtml(this._chain(), this._chain().length > 1 ? "Deine Anschlüsse" : "Dein Anschluss") : ""}
         <button class="chip wide" data-a="connection">
-          <ha-icon icon="mdi:swap-horizontal"></ha-icon> Anschluss einchecken
+          <ha-icon icon="mdi:swap-horizontal"></ha-icon><span class="ell">${this._connectionLabel()}</span>
         </button>
       </div>`;
   }
@@ -1111,6 +1208,30 @@ const STYLE = `<style>
   .meta span:first-child { color: var(--primary-text-color); font-weight: 600; }
   .next { display: flex; gap: 8px; align-items: flex-start; margin-top: 10px; padding: 10px 12px; border-radius: 10px; background: var(--secondary-background-color); font-size: .92em; }
   .next ha-icon { --mdc-icon-size: 18px; color: var(--primary-color); flex: none; }
+  .chain { margin-top: 12px; }
+  .chain-h { display: flex; justify-content: space-between; gap: 8px; margin: 0 2px 6px; font-size: .78em; text-transform: uppercase; letter-spacing: .05em; color: var(--secondary-text-color); }
+  .chain-h span:last-child { text-transform: none; letter-spacing: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .xfer { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; margin: 0 0 0 10px; padding: 7px 10px 7px 14px; border-left: 2px dashed var(--divider-color); font-size: .86em; color: var(--secondary-text-color); min-width: 0; }
+  .xfer ha-icon { --mdc-icon-size: 18px; flex: none; }
+  .xfer .xl { flex: none; }
+  .xfer .xl s { opacity: .7; }
+  .xfer .xw { flex: 1 1 auto; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+  .xfer .xlive { flex: none; color: var(--success-color, #43a047); font-size: .8em; }
+  .xfer.ok ha-icon { color: var(--primary-color); }
+  .xfer.warn, .xfer.warn ha-icon { color: var(--warning-color, #ffa600); }
+  .xfer.bad, .xfer.bad ha-icon { color: var(--error-color, #db4437); }
+  .leg { position: relative; display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px 10px 14px; border-radius: 12px; background: var(--secondary-background-color); overflow: hidden; }
+  .leg::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 4px; background: var(--line); }
+  .leg .badge { background: var(--line); color: var(--line-fg); margin-top: 1px; }
+  .leg.cancelled .leg-main { text-decoration: line-through; opacity: .7; }
+  .leg-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .leg-l { display: flex; align-items: baseline; gap: 6px; min-width: 0; font-variant-numeric: tabular-nums; }
+  .leg-l .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .leg-l .d { color: var(--error-color, #db4437); font-size: .8em; font-weight: 600; }
+  .leg-l .plat { padding: 0 6px; border-radius: 6px; border: 1px solid var(--divider-color); }
+  .leg-l .in { flex: none; font-size: .8em; color: var(--primary-color); font-weight: 600; }
+  .leg-l.sub2 { font-size: .88em; color: var(--secondary-text-color); }
+  .chip .ell { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .done { text-align: center; padding: 24px 16px; }
   .done .big { font-size: 42px; }
   .done .pts { margin-top: 4px; font-size: 1.2em; font-weight: 700; color: var(--primary-color); }
