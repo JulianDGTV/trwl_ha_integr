@@ -41,6 +41,11 @@
           "active_interval": "Abfrageintervall aktive Fahrt (Sekunden)",
           "stats_interval": "Abfrageintervall Statistiken (Minuten)",
           "stats_from": "Statistiken ab (JJJJ-MM-TT)"
+        },
+        "data_description": {
+          "active_interval": "Fahrten und Freunde werden in diesem Takt abgefragt (Standard 60 s). Die aktive Fahrt wird nur geprüft, wenn eine eigene Fahrt läuft oder gleich startet – sonst alle 5 min.",
+          "stats_interval": "Profil-Punkte und Freunde-Rangliste in diesem Takt. Zeiträume, Favoriten und Verlauf nur nach eigenen Check-ins, beim Datumswechsel oder spätestens alle 6 h (Träwelling cacht diese Werte ohnehin serverseitig).",
+          "stats_from": "Beginn für die Gesamt-Statistik."
         }
       }
     }
