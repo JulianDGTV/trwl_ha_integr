@@ -16,7 +16,7 @@
  */
 
 const DOMAIN = "traewelling";
-const VERSION = "1.8.2";
+const VERSION = "1.9.0";
 
 const TYPES = [
   ["", "Alle"],
@@ -254,6 +254,9 @@ function chainHtml(legs, title) {
     </div>`;
 }
 
+// Live-Abfahrten so oft neu laden (nur sichtbar und ohne gewählte Uhrzeit).
+const LIVE_REFRESH_MS = 60000;
+
 // Laufende Check-ins überleben ein Neu-Erzeugen der Karte durch Home Assistant.
 const FLOWS = new Map();
 const FLOW_TTL = 20 * 60 * 1000;
@@ -341,7 +344,7 @@ class TraewellingCheckinCard extends HTMLElement {
 
   connectedCallback() {
     this._timers.tick = setInterval(() => {
-      if ((this._isTravelling() || this._upcomingState()) && !this._busy()) this._render();
+      if (!document.hidden && (this._isTravelling() || this._upcomingState()) && !this._busy()) this._render();
     }, 30000);
     if (this._s.step === "departures" && this._s.station) this._startLiveRefresh();
   }
@@ -352,6 +355,10 @@ class TraewellingCheckinCard extends HTMLElement {
       clearTimeout(t);
     });
     this._timers = {};
+    if (this._onVisible) {
+      document.removeEventListener("visibilitychange", this._onVisible);
+      this._onVisible = null;
+    }
   }
 
   // ------------------------------------------------------------------ //
@@ -593,19 +600,32 @@ class TraewellingCheckinCard extends HTMLElement {
     if (r.station?.name) this._s.station = { ...this._s.station, ...r.station };
     this._s.times = r.times || {};
     this._s.departures = r.departures || [];
+    this._s.loadedAt = Date.now();
   }
 
+  /** Live-Abfahrten jede Minute neu laden – nur solange sie sichtbar sind. */
   _startLiveRefresh() {
     clearInterval(this._timers.live);
-    this._timers.live = setInterval(async () => {
-      if (this._s.step !== "departures" || this._s.when || this._s.loading) return;
-      try {
-        await this._loadDepartures();
-        this._render();
-      } catch (e) {
-        /* nächster Versuch in 60 s */
-      }
-    }, 60000);
+    this._timers.live = setInterval(() => this._refreshLive(), LIVE_REFRESH_MS);
+    if (!this._onVisible) {
+      this._onVisible = () => {
+        if (document.visibilityState === "visible" && Date.now() - (this._s.loadedAt || 0) >= LIVE_REFRESH_MS) {
+          this._refreshLive();
+        }
+      };
+      document.addEventListener("visibilitychange", this._onVisible);
+    }
+  }
+
+  async _refreshLive() {
+    const s = this._s;
+    if (s.step !== "departures" || s.when || s.loading || document.hidden || !this.isConnected) return;
+    try {
+      await this._loadDepartures();
+      this._render();
+    } catch (e) {
+      /* nächster Versuch in 60 s */
+    }
   }
 
   async _pickDeparture(index) {
@@ -1183,7 +1203,6 @@ const STYLE = `<style>
   .late { color: var(--error-color, #db4437); }
   .ok { color: var(--success-color, #43a047); }
   .badge { flex: none; padding: 3px 8px; border-radius: 6px; font-weight: 700; font-size: .85em; white-space: nowrap; }
-  .dir { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .plat { flex: none; font-size: .85em; color: var(--secondary-text-color); }
   .plat.late { color: var(--error-color, #db4437); font-weight: 600; }
   .chips { display: flex; gap: 6px; padding: 4px 16px 10px; overflow-x: auto; scrollbar-width: none; }
@@ -1372,7 +1391,7 @@ class TraewellingFriendsCard extends HTMLElement {
   }
 
   connectedCallback() {
-    this._tick = setInterval(() => this._render(), 30000);
+    this._tick = setInterval(() => !document.hidden && this._render(), 30000);
   }
 
   disconnectedCallback() {
