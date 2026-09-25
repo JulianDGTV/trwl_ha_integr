@@ -1,8 +1,19 @@
-# 🚆 Träwelling für Home Assistant · v1.9.3
+# 🚆 Träwelling für Home Assistant · v1.9.4
 
 Custom Integration für [traewelling.de](https://traewelling.de): deine laufende
 Fahrt, die Fahrten deiner Freunde, deine Reisestatistiken – und Check-in direkt
 aus dem Dashboard.
+
+> [!NOTE]
+> **Inoffizielles Projekt der [V8B KG](https://v8b.eco).** Träwelling selbst wird
+> vom nicht gewinnorientierten **[Träwelling e.V.](https://traewelling.org)**
+> betrieben. Diese Integration ist davon unabhängig und nicht mit dem Verein
+> verbunden.
+>
+> 💚 Dir gefällt Träwelling? **[Unterstütze den Träwelling e.V. mit einer
+> Spende](https://traewelling.org/support-us)** – per Überweisung oder z. B.
+> [GitHub Sponsors](https://github.com/sponsors/Traewelling) – und hilf, Träwelling
+> am Laufen zu halten.
 
 ## ✨ Features
 
@@ -21,10 +32,6 @@ aus dem Dashboard.
 **HACS (empfohlen):** HACS → ⋮ → *Benutzerdefinierte Repositories* →
 `https://github.com/v8b-kg/trwl_ha_integr`, Kategorie *Integration* →
 *Träwelling* herunterladen → Home Assistant neu starten.
-
-> Früher unter `github.com/JulianDGTV/trwl_ha_integr` installiert? Läuft über die
-> automatische Weiterleitung weiter – du kannst das Repository in HACS aber auch
-> mit der neuen Adresse neu eintragen.
 
 **Manuell:** Ordner `custom_components/traewelling` nach
 `<config>/custom_components/traewelling` kopieren und neu starten.
@@ -518,11 +525,16 @@ unter der AGPL-3.0 veröffentlichen. Ohne Gewähr.
 deinen Beitrag unter der AGPL-3.0 und künftig auch unter anderen Lizenzen
 veröffentlichen darf.
 
-Inoffizielles Projekt – nicht verbunden mit Träwelling. „Träwelling“ ist ein Projekt
-der Träwelling-Community ([traewelling.de](https://traewelling.de)).
+**Träwelling** ([traewelling.de](https://traewelling.de)) ist ein Projekt des
+[Träwelling e.V.](https://traewelling.org) und steht selbst unter der AGPL-3.0
+([Quellcode](https://github.com/Traewelling/traewelling)). Diese Integration ist ein
+eigenständiges, inoffizielles Projekt der V8B KG und nicht mit dem Träwelling e.V.
+verbunden. Wenn du Träwelling unterstützen möchtest:
+[Spenden an den Träwelling e.V.](https://traewelling.org/support-us) 💚
 
 ## 📝 Changelog
 
+- **1.9.4** – 💚 Hinweis auf den Träwelling e.V. als Betreiber von Träwelling und Spendenaufruf (oben in der README und im Lizenz-Abschnitt) · 🧹 Umzugs-Hinweis entfernt
 - **1.9.3** – 📄 Lizenz: AGPL-3.0, Copyright V8B KG (wie Träwelling) · Hinweis zu Beiträgen und „inoffiziell, nicht verbunden mit Träwelling“
 - **1.9.2** – 🏢 Repository ist zu [V8B KG](https://v8b.eco) umgezogen: neue Adresse github.com/v8b-kg/trwl_ha_integr in Doku- und Issue-Links, User-Agent und Blueprint (alte Links leiten automatisch weiter)
 - **1.9.1** – 📱 Blueprint „laufende Fahrt als Live-Aktivität“ für den Sperrbildschirm (iPhone + Dynamic Island, Android Live Update) mit Fortschritt, Countdown und automatischem Wechsel beim Anschluss · Template für das Android-Homebildschirm-Widget
