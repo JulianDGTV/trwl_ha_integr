@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
@@ -122,6 +123,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async_get_clientsession(hass),
         entry.data[CONF_TOKEN],
         entry.data.get(CONF_BASE_URL, DEFAULT_BASE_URL),
+        # Titel ist „Träwelling (username)“ → User-Agent kennt den Account ab
+        # der ersten Anfrage (wird danach aus /auth/user aktualisiert).
+        username=(m.group(1) if (m := re.search(r"\(([^()]+)\)\s*$", entry.title or "")) else None),
     )
     coordinator = TraewellingCoordinator(hass, entry, api)
     await coordinator.async_config_entry_first_refresh()

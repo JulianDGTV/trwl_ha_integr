@@ -41,6 +41,7 @@ from .helpers import (
     minutes_to_hours,
     origin_of,
 )
+from .journey import arr_live, station_of, transfer
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -96,7 +97,48 @@ def _upcoming_attrs(data: dict[str, Any]) -> dict[str, Any]:
     if dep is not None:
         attrs["minutes_until"] = max(0, int((dep - dt_util.utcnow()).total_seconds() // 60))
     attrs["after_current"] = _active(data) is not None
+    chain = _chain(data)
+    legs = []
+    prev = _active(data)
+    for leg in chain:
+        legs.append({**_status_attrs(leg), "transfer": transfer(prev, leg)})
+        prev = leg
+    attrs["chain"] = legs
+    attrs["transfers"] = len(legs) - (0 if _active(data) is not None else 1)
+    last = chain[-1] if chain else None
+    if last is not None:
+        dest = destination_of(last) or {}
+        attrs["final_destination"] = dest.get("name")
+        attrs["final_arrival_planned"] = first(dest, "arrivalPlanned", "arrival")
+        final = arr_live(last)
+        attrs["final_arrival"] = final.isoformat() if final else None
     return attrs
+
+
+def _chain(data: dict[str, Any]) -> list[dict[str, Any]]:
+    chain = data.get("chain")
+    return [s for s in chain if isinstance(s, dict)] if isinstance(chain, list) else []
+
+
+def _next_transfer(data: dict[str, Any]) -> dict[str, Any] | None:
+    """Nächster Umstieg: aktive Fahrt → 1. Anschluss, sonst 1. → 2. Fahrt."""
+    chain = _chain(data)
+    legs = [_active(data), *chain] if _active(data) is not None else chain
+    if len(legs) < 2:
+        return None
+    info = transfer(legs[0], legs[1])
+    if info is None:
+        return None
+    nxt = _status_attrs(legs[1])
+    return {
+        **info,
+        "from_line": _status_attrs(legs[0]).get("line"),
+        "to_line": nxt.get("line"),
+        "to_destination": nxt.get("destination"),
+        "departure_planned": nxt.get("departure_planned"),
+        "departure_real": nxt.get("departure_real"),
+        "status_id": nxt.get("status_id"),
+    }
 
 
 def _journey_attrs(data: dict[str, Any]) -> dict[str, Any]:
@@ -123,6 +165,9 @@ def _status_attrs(status: dict[str, Any] | None) -> dict[str, Any]:
             origin, "departurePlatformReal", "departurePlatformPlanned", "platform"
         ),
         "destination": dest.get("name"),
+        "origin_station_id": station_of(origin).get("id"),
+        "destination_station_id": station_of(dest).get("id"),
+        "cancelled": bool(origin.get("cancelled") or dest.get("cancelled")),
         "destination_platform": first(
             dest, "arrivalPlatformReal", "arrivalPlatformPlanned", "platform"
         ),
@@ -436,6 +481,14 @@ UPCOMING_SENSORS: tuple[TrwlSensorDescription, ...] = (
         value_fn=lambda d: departure(_upcoming(d)),
         attr_fn=_upcoming_attrs,
     ),
+    TrwlSensorDescription(
+        key="next_transfer",
+        name="Nächster Umstieg",
+        icon="mdi:swap-horizontal",
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        value_fn=lambda d: (_next_transfer(d) or {}).get("minutes"),
+        attr_fn=lambda d: _next_transfer(d) or {},
+    ),
 )
 
 FRIENDS_SENSORS: tuple[TrwlSensorDescription, ...] = (
@@ -644,6 +697,8 @@ class TraewellingSensor(TraewellingEntity, SensorEntity):
     """Ein einzelner Träwelling-Sensor."""
 
     entity_description: TrwlSensorDescription
+    # Große, sich oft ändernde Listen nicht in die Datenbank schreiben.
+    _unrecorded_attributes = frozenset({"chain"})
 
     @property
     def native_value(self) -> Any:

@@ -28,11 +28,11 @@ def _version() -> str:
         return "0"
 
 
-# Eindeutig identifizierbar für die Träwelling-Betreiber: Name, Version, Kontakt.
-USER_AGENT = (
-    f"trwl-ha-integration/{_version()} "
-    "(Home Assistant; +https://github.com/JulianDGTV/trwl_ha_integr)"
-)
+# Eindeutig identifizierbar für die Träwelling-Betreiber: Name, Version, Kontakt
+# und – sobald bekannt – der Träwelling-Account (@username), auf Wunsch der Betreiber.
+USER_AGENT_BASE = f"trwl-ha-integration/{_version()}"
+USER_AGENT_CONTACT = "+https://github.com/JulianDGTV/trwl_ha_integr"
+USER_AGENT = f"{USER_AGENT_BASE} (Home Assistant; {USER_AGENT_CONTACT})"
 
 def _error_text(status: int, body: str) -> str:
     """Fehlermeldung aus der API-Antwort lesbar machen (JSON-„message“, Umlaute)."""
@@ -83,12 +83,21 @@ class TraewellingApi:
         session: ClientSession,
         token: str,
         base_url: str = DEFAULT_BASE_URL,
+        username: str | None = None,
     ) -> None:
         self._session = session
         self._token = token
         self._base = base_url.rstrip("/")
         # Bis zu diesem Zeitpunkt (time.monotonic) werden keine Anfragen gesendet.
         self._blocked_until = 0.0
+        self._username: str | None = username
+        # False, wenn /dashboard/future mehr Seiten hatte als abgefragt wurden.
+        self.future_complete = True
+
+    @property
+    def user_agent(self) -> str:
+        user = f"; @{self._username}" if self._username else ""
+        return f"{USER_AGENT_BASE} (Home Assistant; {USER_AGENT_CONTACT}{user})"
 
     @property
     def rate_limited_for(self) -> float:
@@ -132,7 +141,7 @@ class TraewellingApi:
         headers = {
             "Authorization": f"Bearer {self._token}",
             "Accept": "application/json",
-            "User-Agent": USER_AGENT,
+            "User-Agent": self.user_agent,
         }
         self._check_rate_limit()
         try:
@@ -178,7 +187,7 @@ class TraewellingApi:
         headers = {
             "Authorization": f"Bearer {self._token}",
             "Accept": "application/json",
-            "User-Agent": USER_AGENT,
+            "User-Agent": self.user_agent,
         }
         self._check_rate_limit()
         try:
@@ -226,7 +235,10 @@ class TraewellingApi:
 
     async def async_get_self(self) -> dict[str, Any]:
         """Profil des authentifizierten Nutzers (Punkte, Gesamtdistanz, ...)."""
-        return self._data(await self._get("auth/user")) or {}
+        user = self._data(await self._get("auth/user")) or {}
+        if isinstance(user, dict) and isinstance(user.get("username"), str):
+            self._username = user["username"].strip() or None
+        return user
 
     async def async_get_active_status(self) -> dict[str, Any] | None:
         """Aktueller Check-in oder None, wenn gerade keine Fahrt läuft."""
@@ -249,11 +261,32 @@ class TraewellingApi:
                 break
         return statuses
 
-    async def async_get_future(self) -> list[dict[str, Any]]:
-        """GET /dashboard/future – eigene Check-ins, die >20 min in der Zukunft starten."""
-        payload = await self._get("dashboard/future", allow_404=True)
+    async def async_get_future(self, pages: int = 3) -> list[dict[str, Any]]:
+        """GET /dashboard/future – eigene Check-ins, die >20 min in der Zukunft starten.
+
+        Träwelling sortiert absteigend (späteste zuerst, 15 je Seite) – die
+        nächsten Fahrten stehen also hinten. Deshalb ggf. weiterblättern.
+        """
+        statuses: list[dict[str, Any]] = []
+        self.future_complete = False
+        for page in range(1, pages + 1):
+            payload = await self._get("dashboard/future", params={"page": page}, allow_404=True)
+            items = self._data(payload) if payload is not None else None
+            if not isinstance(items, list) or not items:
+                self.future_complete = True
+                break
+            statuses.extend(items)
+            links = payload.get("links") if isinstance(payload, dict) else None
+            if not isinstance(links, dict) or not links.get("next"):
+                self.future_complete = True
+                break
+        return statuses
+
+    async def async_get_status(self, status_id: Any) -> dict[str, Any] | None:
+        """GET /status/{id} – ein einzelner Status (None = gelöscht/nicht sichtbar)."""
+        payload = await self._get(f"status/{int(status_id)}", allow_404=True)
         data = self._data(payload) if payload is not None else None
-        return data if isinstance(data, list) else []
+        return data if isinstance(data, dict) else None
 
     async def async_get_statistics_overview(
         self, date_from: str, date_to: str

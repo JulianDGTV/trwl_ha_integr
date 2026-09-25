@@ -30,7 +30,8 @@ from .const import (
     DOMAIN,
 )
 from .friends import active_friend_trips
-from .helpers import arrival, departure
+from .journey import arr_live, build_chain, dep_live
+
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -41,7 +42,13 @@ STATS_REQUEST_SPACING = 3  # Sekunden
 # Bevorstehende eigene Fahrten: so weit voraus anzeigen …
 UPCOMING_HORIZON = timedelta(minutes=60)
 # … und /dashboard/future (Fahrten >20 min voraus) nur so oft abfragen.
+# Träwelling aktualisiert Echtzeitdaten erst ab 20 min vor Abfahrt – danach
+# kommen die Fahrten über /dashboard (jede Minute) bzw. /status/{id}.
 FUTURE_INTERVAL = timedelta(minutes=5)
+# Ab hier liefert /dashboard die eigene Fahrt (Träwelling: 20 min) + Puffer.
+DASHBOARD_WINDOW = timedelta(minutes=20)
+# Höchstens so viele Einzelabfragen /status/{id} pro Poll (Fair Use).
+MAX_STATUS_REFRESH = 3
 
 # Monatsverlauf fürs Diagramm
 HISTORY_MONTHS = 12
@@ -72,6 +79,11 @@ class TraewellingCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_future: datetime | None = None
         self._own_checkins: dict[Any, dict[str, Any]] = {}
         self._dashboard_own: list[dict[str, Any]] = []
+        self._dashboard_fresh = False
+        self._future_fresh = False
+        self._future_new = False
+        # Alle bekannten eigenen, noch nicht beendeten Fahrten (id -> Status).
+        self._known: dict[Any, dict[str, Any]] = {}
         # Abgeschlossene Monate ändern sich nicht mehr → dauerhaft zwischenspeichern.
         self._month_store: Store = Store(hass, STORE_VERSION, f"{DOMAIN}.{entry.entry_id}.months")
         self._month_cache: dict[str, dict[str, Any]] | None = None
@@ -114,7 +126,10 @@ class TraewellingCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         data.update(self._stats)
         await self._async_update_friends(data)
         await self._async_update_future()
-        data["upcoming"] = self._pick_upcoming(data)
+        await self._async_update_known(data)
+        chain = self._build_chain(data)
+        data["chain"] = chain
+        data["upcoming"] = chain[0] if chain else None
         self._maybe_start_statistics()
         return data
 
@@ -145,12 +160,16 @@ class TraewellingCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._last_future = None  # beim nächsten Poll neu abgleichen
 
     async def _async_update_future(self) -> None:
+        self._future_fresh = False
+        self._future_new = False
         now = dt_util.utcnow()
         if self._last_future is not None and now - self._last_future < FUTURE_INTERVAL:
             return
         try:
             self._future = await self.api.async_get_future()
             self._last_future = now
+            self._future_new = True
+            self._future_fresh = self.api.future_complete
         except TraewellingRateLimitError:
             return
         except TraewellingError as err:
@@ -166,40 +185,79 @@ class TraewellingCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return str(uid) in my_ids
         return bool(me.get("username")) and details.get("username") == me.get("username")
 
-    def _pick_upcoming(self, data: dict[str, Any]) -> dict[str, Any] | None:
-        """Früheste eigene Fahrt, die in der nächsten Stunde startet.
+    async def _async_update_known(self, data: dict[str, Any]) -> None:
+        """Bekannte eigene Fahrten zusammenführen, Gelöschte vergessen.
 
-        Solange eine andere Fahrt noch aktiv ist, bleibt die aktive die
-        Hauptanzeige – die bevorstehende wird dann nur als Anschluss geführt.
+        Reihenfolge = Aktualität: eigener Check-in < /dashboard/future <
+        /dashboard (jede Minute, mit Echtzeit) < /status/{id}.
         """
         now = dt_util.utcnow()
-        active = data.get("active") if isinstance(data.get("active"), dict) else None
-        active_id = active.get("id") if active else None
         user = data.get("user")
+        future_ids = {s.get("id") for s in self._future if isinstance(s, dict)}
+        dash = self._dashboard_own if self._dashboard_fresh else []
+        dash_ids = {s.get("id") for s in dash if isinstance(s, dict)}
 
-        candidates: dict[Any, dict[str, Any]] = {}
-        for status in [*self._dashboard_own, *self._future, *self._own_checkins.values()]:
-            if isinstance(status, dict) and status.get("id") is not None:
-                candidates[status["id"]] = status
+        future = self._future if self._future_new else []
+        for status in [*self._own_checkins.values(), *future, *dash]:
+            if not isinstance(status, dict) or status.get("id") is None:
+                continue
+            if status.get("id") in self._own_checkins or self._is_own(status, user):
+                self._known[status["id"]] = status
+        # Eigene Check-ins, die der Server schon liefert, nicht mehr gesondert merken.
+        for sid in (future_ids if self._future_new else set()) | dash_ids:
+            self._own_checkins.pop(sid, None)
+        active = data.get("active") if isinstance(data.get("active"), dict) else {}
+        if active.get("id") is not None:
+            self._known.pop(active["id"], None)  # läuft gerade → nicht Teil der Kette
 
-        best, best_dep = None, None
-        for sid, status in list(candidates.items()):
-            arr = arrival(status)
+        refresh: list[Any] = []
+        for sid, status in list(self._known.items()):
+            arr = arr_live(status)
+            dep = dep_live(status)
             if arr is not None and arr < now:
-                self._own_checkins.pop(sid, None)  # vorbei → vergessen
+                self._forget(sid)  # vorbei
                 continue
-            if sid == active_id:
+            if dep is None:
                 continue
-            dep = departure(status)
-            if dep is None or dep < now - timedelta(minutes=1) or dep > now + UPCOMING_HORIZON:
+            if dep >= now + DASHBOARD_WINDOW + timedelta(minutes=2):
+                # Müsste in /dashboard/future stehen – fehlt es dort, wurde
+                # der Check-in gelöscht.
+                if self._future_fresh and sid not in future_ids and sid not in dash_ids:
+                    self._forget(sid)
+            elif sid not in dash_ids and dep >= now - timedelta(minutes=5):
+                # Kurz vor Abfahrt, aber nicht (mehr) im Dashboard (z. B. vor
+                # über 7 Tagen angelegt) → einzeln mit Echtzeit nachladen.
+                refresh.append((dep, sid))
+
+        refresh.sort(key=lambda x: x[0])
+        for _dep, sid in refresh[:MAX_STATUS_REFRESH]:
+            try:
+                status = await self.api.async_get_status(sid)
+            except TraewellingRateLimitError:
+                return
+            except TraewellingError as err:
+                _LOGGER.debug("Status %s nicht abrufbar: %s", sid, err)
                 continue
-            if status in self._own_checkins.values() or self._is_own(status, user):
-                if best_dep is None or dep < best_dep:
-                    best, best_dep = status, dep
-        return best
+            if status is None:
+                self._forget(sid)  # gelöscht
+            else:
+                self._known[sid] = status
+
+    def _forget(self, sid: Any) -> None:
+        self._known.pop(sid, None)
+        self._own_checkins.pop(sid, None)
+
+    def _build_chain(self, data: dict[str, Any]) -> list[dict[str, Any]]:
+        """Anschlusskette: nach der aktiven Fahrt bzw. ab der nächsten Fahrt
+        (innerhalb einer Stunde) jeweils den nächsten eigenen Check-in."""
+        active = data.get("active") if isinstance(data.get("active"), dict) else None
+        return build_chain(
+            active, list(self._known.values()), dt_util.utcnow(), UPCOMING_HORIZON
+        )
 
     async def _async_update_friends(self, data: dict[str, Any]) -> None:
         """Laufende Fahrten gefolgter Accounts. Fehler hier sind nicht fatal."""
+        self._dashboard_fresh = False
         try:
             statuses = await self.api.async_get_dashboard()
         except TraewellingRateLimitError:
@@ -213,6 +271,7 @@ class TraewellingCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._dashboard_own = [
             s for s in statuses if isinstance(s, dict) and self._is_own(s, data.get("user"))
         ]
+        self._dashboard_fresh = True
         self._remember_ticket([data.get("active"), *statuses], data.get("user"))
 
     def _remember_ticket(self, statuses: list[Any], user: dict[str, Any] | None) -> None:
