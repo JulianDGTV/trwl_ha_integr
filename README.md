@@ -1,4 +1,4 @@
-# 🚆 Träwelling für Home Assistant · v1.9.1
+# 🚆 Träwelling für Home Assistant · v1.9.3
 
 Custom Integration für [traewelling.de](https://traewelling.de): deine laufende
 Fahrt, die Fahrten deiner Freunde, deine Reisestatistiken – und Check-in direkt
@@ -19,8 +19,12 @@ aus dem Dashboard.
 ## 📦 Installation
 
 **HACS (empfohlen):** HACS → ⋮ → *Benutzerdefinierte Repositories* →
-`https://github.com/JulianDGTV/trwl_ha_integr`, Kategorie *Integration* →
+`https://github.com/v8b-kg/trwl_ha_integr`, Kategorie *Integration* →
 *Träwelling* herunterladen → Home Assistant neu starten.
+
+> Früher unter `github.com/JulianDGTV/trwl_ha_integr` installiert? Läuft über die
+> automatische Weiterleitung weiter – du kannst das Repository in HACS aber auch
+> mit der neuen Adresse neu eintragen.
 
 **Manuell:** Ordner `custom_components/traewelling` nach
 `<config>/custom_components/traewelling` kopieren und neu starten.
@@ -341,7 +345,7 @@ Live-Countdown bis zur Ankunft, Farbe je Verkehrsmittel. Beim Anschluss wechselt
 sie automatisch, nach der Ankunft verschwindet sie. Braucht Home Assistant 2026.7+,
 die Companion-App und iOS 17.2+ bzw. Android 16+.
 
-[![Blueprint importieren](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FJulianDGTV%2Ftrwl_ha_integr%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Ftraewelling%2Flive_activity.yaml)
+[![Blueprint importieren](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fv8b-kg%2Ftrwl_ha_integr%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Ftraewelling%2Flive_activity.yaml)
 
 Blueprint importieren → **Automatisierung erstellen** → „Unterwegs“-Sensor und Handy
 wählen → speichern. Optionen: Countdown oder Strecke als Text, Dashboard-Pfad beim
@@ -483,7 +487,7 @@ Stationssuche (6 h) und „In meiner Nähe“ (24 h). Antwortet Träwelling mit 
 pausiert die Integration alle Anfragen für die Dauer aus `Retry-After` (ohne Angabe: 60 s).
 
 Alle Anfragen tragen den User-Agent
-`trwl-ha-integration/<version> (Home Assistant; +https://github.com/JulianDGTV/trwl_ha_integr; @<dein-username>)`.
+`trwl-ha-integration/<version> (Home Assistant; +https://github.com/v8b-kg/trwl_ha_integr; @<dein-username>)`.
 Der Träwelling-Account steht auf Wunsch der Träwelling-Betreiber mit drin, damit sie Anfragen einem Nutzer zuordnen können.
 
 ## 🩺 Fehlersuche
@@ -500,8 +504,27 @@ logger:
     custom_components.traewelling: debug
 ```
 
+## 📄 Lizenz
+
+Copyright © 2026 [V8B KG](https://v8b.eco)
+
+Diese Integration ist freie Software unter der
+[GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0) – derselben Lizenz wie
+Träwelling. Du darfst sie nutzen, verändern und weitergeben, auch kommerziell;
+wer sie verändert weitergibt oder als Dienst anbietet, muss den Quellcode ebenfalls
+unter der AGPL-3.0 veröffentlichen. Ohne Gewähr.
+
+**Beiträge:** Mit einem Pull Request erklärst du dich einverstanden, dass die V8B KG
+deinen Beitrag unter der AGPL-3.0 und künftig auch unter anderen Lizenzen
+veröffentlichen darf.
+
+Inoffizielles Projekt – nicht verbunden mit Träwelling. „Träwelling“ ist ein Projekt
+der Träwelling-Community ([traewelling.de](https://traewelling.de)).
+
 ## 📝 Changelog
 
+- **1.9.3** – 📄 Lizenz: AGPL-3.0, Copyright V8B KG (wie Träwelling) · Hinweis zu Beiträgen und „inoffiziell, nicht verbunden mit Träwelling“
+- **1.9.2** – 🏢 Repository ist zu [V8B KG](https://v8b.eco) umgezogen: neue Adresse github.com/v8b-kg/trwl_ha_integr in Doku- und Issue-Links, User-Agent und Blueprint (alte Links leiten automatisch weiter)
 - **1.9.1** – 📱 Blueprint „laufende Fahrt als Live-Aktivität“ für den Sperrbildschirm (iPhone + Dynamic Island, Android Live Update) mit Fortschritt, Countdown und automatischem Wechsel beim Anschluss · Template für das Android-Homebildschirm-Widget
 - **1.9.0** – 🧹 Aufgeräumt und sparsamer: gut die Hälfte weniger Anfragen im Normalbetrieb bei gleichem Funktionsumfang · aktive Fahrt nur abfragen, wenn eine eigene Fahrt läuft oder bald startet · Dashboard-Seite 2 nur bei Bedarf · Statistik nach „Lebensdauer“ gruppiert (Zeiträume nur nach eigenen Check-ins/Datumswechsel) · 💾 Zwischenspeicher für Abfahrten, Fahrtverläufe, Stationssuche, „In meiner Nähe“, zuletzt genutzte Stationen und Fahrkarten; gleiche parallele Anfragen werden zusammengefasst · 📵 Live-Abfahrten pausieren, solange die Karte nicht sichtbar ist · 🗄️ Große Listen-Attribute (Anschlüsse, Freunde, Ranglisten …) werden nicht mehr in die Datenbank geschrieben · 🐛 „Punkte gesamt“ (= Punkte der letzten 7 Tage) nicht mehr als stetig steigend markiert · 🔌 HTTP-Verbindungen werden immer sauber freigegeben · 🏗️ Code in Module aufgeteilt (Anschlüsse, Statistik, Cache), `runtime_data` statt `hass.data`, Beschreibungen in den Optionen
 - **1.8.2** – 👥 Freunde, die bald losfahren, erscheinen schon in der Freunde-Karte – mit „in 15 min“ und „Abfahrt in …“ wie bei deinen eigenen Fahrten · „Danach: …“, wenn ein Freund den Anschluss schon eingecheckt hat · Sensor „Freunde unterwegs“ mit `travelling` und `soon` · 🏷️ Versionsnummer im README-Titel
