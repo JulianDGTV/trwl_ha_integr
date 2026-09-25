@@ -1,17 +1,17 @@
 {
   "domain": "traewelling",
   "name": "Träwelling",
-  "codeowners": [],
+  "codeowners": ["@JulianDGTV"],
   "config_flow": true,
   "dependencies": [
     "frontend",
     "http",
     "lovelace"
   ],
-  "documentation": "https://github.com/JulianDGTV/trwl_ha_integr",
+  "documentation": "https://github.com/v8b-kg/trwl_ha_integr",
   "integration_type": "service",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/JulianDGTV/trwl_ha_integr/issues",
+  "issue_tracker": "https://github.com/v8b-kg/trwl_ha_integr/issues",
   "requirements": [],
-  "version": "1.9.1"
+  "version": "1.9.3"
 }

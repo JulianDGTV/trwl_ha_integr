@@ -21,7 +21,7 @@ TIMEOUT = 20
 
 # Eindeutig identifizierbar für die Träwelling-Betreiber: Name, Version, Kontakt
 # und – sobald bekannt – der Träwelling-Account (@username), auf Wunsch der Betreiber.
-USER_AGENT_CONTACT = "+https://github.com/JulianDGTV/trwl_ha_integr"
+USER_AGENT_CONTACT = "+https://github.com/v8b-kg/trwl_ha_integr"
 
 # Fallback, wenn Träwelling 429 ohne Retry-After schickt.
 DEFAULT_RETRY_AFTER = 60
