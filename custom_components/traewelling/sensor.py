@@ -41,7 +41,11 @@ from .helpers import (
     minutes_to_hours,
     origin_of,
 )
-from .journey import arr_live, station_of, transfer
+from .journey import arr_live, arr_source, station_of, transfer
+
+
+def _iso(value: Any) -> str | None:
+    return value.isoformat() if isinstance(value, datetime) else None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -104,6 +108,11 @@ def _upcoming_attrs(data: dict[str, Any]) -> dict[str, Any]:
         legs.append({**_status_attrs(leg), "transfer": transfer(prev, leg)})
         prev = leg
     attrs["chain"] = legs
+    attrs["warnings"] = [
+        leg["transfer"]["warning"]
+        for leg in legs
+        if isinstance(leg.get("transfer"), dict) and leg["transfer"].get("warning")
+    ]
     attrs["transfers"] = len(legs) - (0 if _active(data) is not None else 1)
     last = chain[-1] if chain else None
     if last is not None:
@@ -175,6 +184,8 @@ def _status_attrs(status: dict[str, Any] | None) -> dict[str, Any]:
         "departure_real": first(origin, "departureReal"),
         "arrival_planned": first(dest, "arrivalPlanned", "arrival"),
         "arrival_real": first(dest, "arrivalReal"),
+        "arrival_expected": _iso(arr_live(status)),
+        "arrival_estimated": arr_source(status) == "estimate",
         "distance_km": meters_to_km(checkin.get("distance")),
         "duration_minutes": checkin.get("duration"),
         "points": checkin.get("points"),
@@ -501,6 +512,8 @@ FRIENDS_SENSORS: tuple[TrwlSensorDescription, ...] = (
         attr_fn=lambda d: {
             "trips": _friends(d),
             "names": [t.get("name") for t in _friends(d)],
+            "travelling": sum(1 for t in _friends(d) if not t.get("upcoming")),
+            "soon": sum(1 for t in _friends(d) if t.get("upcoming")),
         },
     ),
 )

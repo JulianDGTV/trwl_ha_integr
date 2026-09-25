@@ -17,6 +17,10 @@ from .helpers import checkin_of, destination_of, first, origin_of, parse_dt
 MAX_TRANSFER = timedelta(hours=3)
 # Plan-Abfahrt darf minimal vor der Plan-Ankunft liegen (Rundungen, Minutentakt).
 EARLY_TOLERANCE = timedelta(minutes=1)
+# Findet sich nichts Passendes, werden auch „unlogische“ Check-ins, die laut
+# Fahrplan bis zu so lange vor der Ankunft abfahren, in die Kette genommen –
+# mit Warnung, statt sie zu verschweigen.
+CONFLICT_WINDOW = timedelta(minutes=60)
 # Mehr als so viele Fahrten zeigt niemand am Stück an.
 MAX_LEGS = 8
 
@@ -48,15 +52,52 @@ def dep_live(status: dict[str, Any] | None) -> datetime | None:
 
 
 def arr_live(status: dict[str, Any] | None) -> datetime | None:
+    """Ankunft: manuell > Echtzeit > Schätzung (Abfahrtsverspätung) > Plan."""
     return (
         _manual(status, "manualArrival")
         or parse_dt(first(destination_of(status) or {}, "arrivalReal"))
+        or _arr_estimate(status)
         or arr_planned(status)
     )
 
 
-def _has_live(stop: dict[str, Any], key: str) -> bool:
-    return bool(stop.get(key))
+def _arr_estimate(status: dict[str, Any] | None) -> datetime | None:
+    """Fährt eine Fahrt verspätet ab, hat aber (noch) keine Ankunfts-Echtzeit,
+    kommt sie voraussichtlich mit derselben Verspätung an."""
+    if not (_manual(status, "manualDeparture") or (origin_of(status) or {}).get("departureReal")):
+        return None
+    dep_p, arr_p = dep_planned(status), arr_planned(status)
+    dep_l = _manual(status, "manualDeparture") or parse_dt(
+        first(origin_of(status) or {}, "departureReal")
+    )
+    if dep_p is None or arr_p is None or dep_l is None or dep_l <= dep_p:
+        return None
+    return arr_p + (dep_l - dep_p)
+
+
+def arr_is_live(status: dict[str, Any] | None) -> bool:
+    return bool(_manual(status, "manualArrival") or (destination_of(status) or {}).get("arrivalReal"))
+
+
+def dep_is_live(status: dict[str, Any] | None) -> bool:
+    return bool(_manual(status, "manualDeparture") or (origin_of(status) or {}).get("departureReal"))
+
+
+def dep_source(status: dict[str, Any] | None) -> str:
+    """Woher die Abfahrtszeit stammt: manual, board (Live-Abfahrtstafel), live, plan."""
+    if _manual(status, "manualDeparture"):
+        return "manual"
+    if (origin_of(status) or {}).get("departureReal"):
+        return "board" if (status or {}).get("_board") else "live"
+    return "plan"
+
+
+def arr_source(status: dict[str, Any] | None) -> str:
+    if _manual(status, "manualArrival"):
+        return "manual"
+    if (destination_of(status) or {}).get("arrivalReal"):
+        return "live"
+    return "estimate" if _arr_estimate(status) else "plan"
 
 
 def station_of(stop: dict[str, Any] | None) -> dict[str, Any]:
@@ -115,13 +156,36 @@ def transfer(prev: dict[str, Any] | None, nxt: dict[str, Any] | None) -> dict[st
     minutes = _minutes(dep_l - arr_l)
     planned = _minutes(dep_p - arr_p) if arr_p and dep_p else None
     cancelled = bool(stop_in.get("cancelled")) or bool(stop_out.get("cancelled"))
+    arr_delay = _minutes(arr_l - arr_p) if arr_p else 0
+    dep_delay = _minutes(dep_l - dep_p) if dep_p else 0
+    src_in, src_out = arr_source(prev), dep_source(nxt)
+    where = st_in.get("name") or "Umstieg"
 
+    warning = None
     if cancelled:
         rating = "cancelled"
+        warning = "Anschluss fällt aus" if stop_out.get("cancelled") else "Ankunft fällt aus"
+    elif planned is not None and planned < 0:
+        # Schon laut Fahrplan unmöglich → Check-in prüfen.
+        rating = "conflict"
+        warning = f"Abfahrt laut Fahrplan {-planned} min vor der Ankunft – Check-in prüfen"
+    elif minutes < need and src_in != "plan" and src_out == "plan" and arr_delay > 0:
+        # Ankunft hat Echtzeit (verspätet), der Anschluss nicht – er kann
+        # genauso verspätet sein. Nicht als „verpasst“ werten.
+        rating = "unknown"
+        warning = (
+            f"Ankunft {'voraussichtlich ' if src_in == 'estimate' else ''}+{arr_delay} min, "
+            "für den Anschluss gibt es noch keine Echtzeit – er ist evtl. auch verspätet"
+        )
     elif minutes < 0:
         rating = "missed"
+        warning = f"Nach Echtzeit {-minutes} min zu spät für den Anschluss in {where}"
     elif minutes < need:
         rating = "risk"
+        warning = (
+            f"Nur {minutes} min zum Umsteigen in {where}"
+            + ("" if same else f" (Fußweg ca. {walk} min)" if walk else "")
+        )
     elif minutes < need + 3:
         rating = "tight"
     else:
@@ -132,7 +196,12 @@ def transfer(prev: dict[str, Any] | None, nxt: dict[str, Any] | None) -> dict[st
         "minutes_planned": planned,
         "change": (minutes - planned) if planned is not None else None,
         "rating": rating,
-        "live": _has_live(stop_in, "arrivalReal") or _has_live(stop_out, "departureReal"),
+        "warning": warning,
+        "live": src_in != "plan" or src_out != "plan",
+        "arrival_source": src_in,
+        "departure_source": src_out,
+        "arrival_delay": arr_delay,
+        "departure_delay": dep_delay,
         "station": st_in.get("name"),
         "to_station": None if same else st_out.get("name"),
         "same_station": same,
@@ -190,13 +259,23 @@ def build_chain(
         ref = arr_planned(prev) or arr_live(prev)
         if ref is None:
             break
+        # Obergrenze ab der späteren von Plan- und Echtzeit-Ankunft, damit
+        # eine große Verspätung die Kette nicht abreißen lässt.
+        late = max(ref, arr_live(prev) or ref)
+        # Frühester Check-in, der nach der Ankunft startet. Auch „unlogische“,
+        # die laut Fahrplan schon vor der Ankunft abfahren (aber danach
+        # ankommen), gehören dazu – sie werden mit Warnung angezeigt.
         nxt = None
         for dep, status in pool:
             if id(status) in used:
                 continue
-            if ref - EARLY_TOLERANCE <= dep <= ref + MAX_TRANSFER:
-                nxt = status
-                break
+            if not ref - CONFLICT_WINDOW <= dep <= late + MAX_TRANSFER:
+                continue
+            end = arr_planned(status) or arr_live(status)
+            if dep < ref - EARLY_TOLERANCE and (end is None or end <= ref):
+                continue
+            nxt = status
+            break
         if nxt is None:
             break
         chain.append(nxt)

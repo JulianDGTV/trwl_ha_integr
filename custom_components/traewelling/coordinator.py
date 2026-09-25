@@ -30,7 +30,18 @@ from .const import (
     DOMAIN,
 )
 from .friends import active_friend_trips
-from .journey import arr_live, build_chain, dep_live
+from .journey import (
+    arr_live,
+    arr_planned,
+    arr_source,
+    build_chain,
+    dep_is_live,
+    dep_live,
+    dep_planned,
+    station_of,
+    transfer,
+)
+from .helpers import checkin_of, first, origin_of, parse_dt
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -49,6 +60,12 @@ FUTURE_INTERVAL = timedelta(minutes=5)
 DASHBOARD_WINDOW = timedelta(minutes=20)
 # Höchstens so viele Einzelabfragen /status/{id} pro Poll (Fair Use).
 MAX_STATUS_REFRESH = 3
+# Anschluss ohne Echtzeit bei verspäteter Ankunft: Live-Abfahrtstafel der
+# Umstiegsstation abfragen – je Anschluss höchstens so oft …
+BOARD_INTERVAL = timedelta(minutes=3)
+# … höchstens so viele pro Poll und nur für Anschlüsse in diesem Zeitraum.
+MAX_BOARD_LOOKUPS = 2
+BOARD_HORIZON = timedelta(hours=3)
 
 # Monatsverlauf fürs Diagramm
 HISTORY_MONTHS = 12
@@ -84,6 +101,8 @@ class TraewellingCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._future_new = False
         # Alle bekannten eigenen, noch nicht beendeten Fahrten (id -> Status).
         self._known: dict[Any, dict[str, Any]] = {}
+        # Echtzeit von der Abfahrtstafel für Anschlüsse ohne Träwelling-Echtzeit.
+        self._board: dict[Any, dict[str, Any]] = {}
         # Abgeschlossene Monate ändern sich nicht mehr → dauerhaft zwischenspeichern.
         self._month_store: Store = Store(hass, STORE_VERSION, f"{DOMAIN}.{entry.entry_id}.months")
         self._month_cache: dict[str, dict[str, Any]] | None = None
@@ -128,6 +147,7 @@ class TraewellingCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self._async_update_future()
         await self._async_update_known(data)
         chain = self._build_chain(data)
+        chain = await self._async_board_realtime(data.get("active"), chain)
         data["chain"] = chain
         data["upcoming"] = chain[0] if chain else None
         self._maybe_start_statistics()
@@ -246,6 +266,114 @@ class TraewellingCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _forget(self, sid: Any) -> None:
         self._known.pop(sid, None)
         self._own_checkins.pop(sid, None)
+        self._board.pop(sid, None)
+
+    # ------------------------------------------------------------------ #
+    # Echtzeit für Anschlüsse von der Abfahrtstafel
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _with_board(status: dict[str, Any], board: dict[str, Any] | None) -> dict[str, Any]:
+        """Status-Kopie mit Echtzeit/Gleis von der Abfahrtstafel."""
+        if not board or dep_is_live(status):
+            return status
+        checkin = dict(checkin_of(status) or {})
+        key = "origin" if "origin" in checkin else "from"
+        origin = dict(checkin.get(key) or {})
+        if board.get("real"):
+            origin["departureReal"] = board["real"]
+        if board.get("platform"):
+            origin["departurePlatformReal"] = board["platform"]
+        if board.get("cancelled"):
+            origin["cancelled"] = True
+        checkin[key] = origin
+        ckey = "checkin" if "checkin" in status else "train"
+        return {**status, ckey: checkin, "_board": bool(board.get("real"))}
+
+    def _needs_board(self, prev: dict[str, Any] | None, nxt: dict[str, Any], now: datetime) -> bool:
+        """Anschluss hat keine Echtzeit, die Ankunft davor ist aber verspätet
+        oder der Umstieg sieht (nach Plan des Anschlusses) kritisch aus."""
+        if prev is None or dep_is_live(nxt):
+            return False
+        dep = dep_planned(nxt)
+        if dep is None or dep > now + BOARD_HORIZON or dep < now - timedelta(minutes=10):
+            return False
+        if station_of(origin_of(nxt)).get("id") is None:
+            return False
+        arr_p, arr_l = arr_planned(prev), arr_live(prev)
+        delayed = (
+            arr_source(prev) != "plan" and arr_p and arr_l and arr_l - arr_p >= timedelta(minutes=2)
+        )
+        info = transfer(prev, nxt) or {}
+        return bool(delayed) or info.get("rating") in ("risk", "missed", "unknown")
+
+    async def _async_board_realtime(
+        self, active: Any, chain: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        now = dt_util.utcnow()
+        lookups = 0
+        out: list[dict[str, Any]] = []
+        prev = active if isinstance(active, dict) else None
+        for leg in chain:
+            sid = leg.get("id")
+            board = self._board.get(sid)
+            if self._needs_board(prev, leg, now):
+                stale = board is None or now - board["t"] >= BOARD_INTERVAL
+                if stale and lookups < MAX_BOARD_LOOKUPS:
+                    lookups += 1
+                    fresh = await self._async_lookup_board(leg)
+                    if fresh is not None:
+                        board = self._board[sid] = {**fresh, "t": now}
+                    elif board is None:
+                        # Nichts gefunden → nicht jede Minute neu fragen.
+                        self._board[sid] = {"t": now}
+                    else:
+                        board["t"] = now
+            elif dep_is_live(leg):
+                self._board.pop(sid, None)  # Träwelling hat jetzt selbst Echtzeit
+                board = None
+            leg = self._with_board(leg, board)
+            out.append(leg)
+            prev = leg
+        return out
+
+    async def _async_lookup_board(self, status: dict[str, Any]) -> dict[str, Any] | None:
+        origin = origin_of(status) or {}
+        station_id = station_of(origin).get("id")
+        planned = dep_planned(status)
+        if station_id is None or planned is None:
+            return None
+        checkin = checkin_of(status) or {}
+        when = (planned - timedelta(minutes=2)).isoformat()
+        try:
+            payload = await self.api.async_departures(int(station_id), when=when)
+        except TraewellingRateLimitError:
+            return None
+        except TraewellingError as err:
+            _LOGGER.debug("Abfahrtstafel %s nicht abrufbar: %s", station_id, err)
+            return None
+        items = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(items, list):
+            return None
+        trip_id = checkin.get("hafasId")
+        line = first(checkin, "lineName", "number")
+        hit = None
+        for dep in items:
+            if not isinstance(dep, dict):
+                continue
+            if trip_id and dep.get("tripId") == trip_id:
+                hit = dep
+                break
+            dep_line = first(dep.get("line") or {}, "name", "productName", "id")
+            if hit is None and line and dep_line == line and parse_dt(dep.get("plannedWhen")) == planned:
+                hit = dep
+        if hit is None:
+            return None
+        return {
+            "real": hit.get("when"),
+            "platform": hit.get("platform"),
+            "cancelled": bool(hit.get("cancelled")),
+        }
 
     def _build_chain(self, data: dict[str, Any]) -> list[dict[str, Any]]:
         """Anschlusskette: nach der aktiven Fahrt bzw. ab der nächsten Fahrt
