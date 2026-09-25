@@ -1,4 +1,4 @@
-# 🚆 Träwelling für Home Assistant · v1.8.2
+# 🚆 Träwelling für Home Assistant · v1.9.0
 
 Custom Integration für [traewelling.de](https://traewelling.de): deine laufende
 Fahrt, die Fahrten deiner Freunde, deine Reisestatistiken – und Check-in direkt
@@ -51,7 +51,7 @@ Einstellungen → Geräte & Dienste → Träwelling → ⋮ → **Neu konfigurie
 > `sensor.trawelling_deinname_punkte_gesamt`. Unten steht jeweils nur das Ende.
 > Die Dashboard-Vorlage findet die Entitäten automatisch.
 
-**Aktive Fahrt** (Abfrage standardmäßig alle 60 s)
+**Aktive Fahrt** (standardmäßig jede Minute, solange eine eigene Fahrt läuft oder in Kürze startet – sonst alle 5 min)
 
 | Entität endet auf | Beschreibung |
 |---|---|
@@ -103,11 +103,11 @@ und den Anschluss schon eingecheckt hat, bekommt ihn als `next`
 | `progress`, `minutes_left` | Fortschritt und Restzeit (Stand letzte Abfrage) |
 | `distance_km`, `body`, `url` | Distanz, Status-Text, Link zum Status |
 
-**Statistik** (standardmäßig alle 60 min – die API cacht serverseitig 1–6 h)
+**Statistik** (Profil-Punkte und Rangliste standardmäßig alle 60 min; Zeiträume, Favoriten und Verlauf nach eigenen Check-ins, beim Datumswechsel und sonst alle 6 h – die API cacht serverseitig 1–6 h)
 
 | Entität endet auf | Inhalt | Quelle |
 |---|---|---|
-| `…_punkte_gesamt`, `…_distanz_gesamt`, `…_reisezeit_gesamt` | Punkte, km, Stunden | Profil |
+| `…_punkte_gesamt`, `…_distanz_gesamt`, `…_reisezeit_gesamt` | Punkte (Träwelling: letzte 7 Tage), km, Stunden | Profil |
 | `…_check_ins_gesamt` | Check-ins seit Statistik-Start, längste/kürzeste Fahrten als Attribute | `/statistics/overview` |
 | `…_aktive_reisetage`, `…_durchschnittsdistanz` | Reisetage, Ø km pro Fahrt | `/statistics/overview` |
 | `…_check_ins_diese_woche`, `…_distanz_diese_woche` | ab Montag | `/statistics/overview` |
@@ -406,12 +406,27 @@ Entity-IDs an deine Installation anpassen.
 ## 🤝 Fair Use
 
 Träwelling erlaubt maximal 500 Anfragen pro 5 Minuten. Die Integration braucht im
-Normalbetrieb etwa 13–20: aktive Fahrt und Freunde jeden Poll (kurz vor einem Anschluss ggf. 1–3 Einzelabfragen, bei Verspätung die Abfahrtstafel je Anschluss alle 3 min), geplante Fahrten
-alle 5 Minuten, die Statistik alle 60 Minuten nacheinander mit 3 s Abstand. Der
+Normalbetrieb etwa **7 pro 5 Minuten** (vorher ~16), während einer Fahrt etwa 12:
+
+| Was | Wie oft |
+|---|---|
+| `/dashboard` (Freunde + eigene Fahrten) | jeden Poll; Seite 2 nur, wenn Seite 1 weniger als 24 h zurückreicht |
+| `/user/statuses/active` | jeden Poll, solange eine eigene Fahrt läuft oder in 5 min startet und direkt nach einem Check-in – sonst alle 5 min |
+| `/dashboard/future` | alle 5 min |
+| `/status/{id}`, Abfahrtstafel | nur für Anschlüsse, die es brauchen (max. 3 bzw. 2 pro Poll) |
+| Profil + Rangliste | alle 60 min |
+| Zeiträume, Favoriten, Verkehrsmittel (6 Anfragen) | nach eigenen Check-ins, beim Datumswechsel, sonst alle 6 h |
+| Monats-/Wochenverlauf | alle 6 h (Träwelling cacht 6 h) |
+
+Statistik-Anfragen laufen im Hintergrund nacheinander mit 3 s Abstand. Der
 Monatsverlauf wird einmalig nachgeladen (bis zu 11 Anfragen, ebenfalls mit Abstand)
 und danach gespeichert. Freunde- und Statistik-Karte lesen nur die Sensoren und
-stellen keine eigenen Anfragen; die Check-in-Karte nur, während du sie bedienst. Antwortet Träwelling mit HTTP 429, pausiert die
-Integration alle Anfragen für die Dauer aus `Retry-After` (ohne Angabe: 60 s).
+stellen keine eigenen Anfragen; die Check-in-Karte nur, während du sie bedienst –
+Live-Abfahrten nur, solange sie sichtbar sind. Kurz zwischengespeichert werden
+Abfahrten (20 s, z. B. Handy und iPad gleichzeitig), Fahrtverläufe (30 s),
+zuletzt genutzte Stationen und Fahrkarten (10 min, nach einem Check-in sofort neu),
+Stationssuche (6 h) und „In meiner Nähe“ (24 h). Antwortet Träwelling mit HTTP 429,
+pausiert die Integration alle Anfragen für die Dauer aus `Retry-After` (ohne Angabe: 60 s).
 
 Alle Anfragen tragen den User-Agent
 `trwl-ha-integration/<version> (Home Assistant; +https://github.com/JulianDGTV/trwl_ha_integr; @<dein-username>)`.
@@ -433,6 +448,7 @@ logger:
 
 ## 📝 Changelog
 
+- **1.9.0** – 🧹 Aufgeräumt und sparsamer: gut die Hälfte weniger Anfragen im Normalbetrieb bei gleichem Funktionsumfang · aktive Fahrt nur abfragen, wenn eine eigene Fahrt läuft oder bald startet · Dashboard-Seite 2 nur bei Bedarf · Statistik nach „Lebensdauer“ gruppiert (Zeiträume nur nach eigenen Check-ins/Datumswechsel) · 💾 Zwischenspeicher für Abfahrten, Fahrtverläufe, Stationssuche, „In meiner Nähe“, zuletzt genutzte Stationen und Fahrkarten; gleiche parallele Anfragen werden zusammengefasst · 📵 Live-Abfahrten pausieren, solange die Karte nicht sichtbar ist · 🗄️ Große Listen-Attribute (Anschlüsse, Freunde, Ranglisten …) werden nicht mehr in die Datenbank geschrieben · 🐛 „Punkte gesamt“ (= Punkte der letzten 7 Tage) nicht mehr als stetig steigend markiert · 🔌 HTTP-Verbindungen werden immer sauber freigegeben · 🏗️ Code in Module aufgeteilt (Anschlüsse, Statistik, Cache), `runtime_data` statt `hass.data`, Beschreibungen in den Optionen
 - **1.8.2** – 👥 Freunde, die bald losfahren, erscheinen schon in der Freunde-Karte – mit „in 15 min“ und „Abfahrt in …“ wie bei deinen eigenen Fahrten · „Danach: …“, wenn ein Freund den Anschluss schon eingecheckt hat · Sensor „Freunde unterwegs“ mit `travelling` und `soon` · 🏷️ Versionsnummer im README-Titel
 - **1.8.1** – ⚠️ Warnungen bei knappen, gefährdeten, verpassten und „unlogischen“ Anschlüssen (Banner + Hinweis am Umstieg), die folgenden Fahrten bleiben sichtbar · ❔ Verspätete Ankunft + Anschluss ohne Echtzeit = „unklar“ statt „verpasst“ · 📡 Echtzeit für solche Anschlüsse von der Live-Abfahrtstafel · 🔮 Ankunft wird aus der Abfahrtsverspätung geschätzt · 🔗 Große Verspätungen lassen die Kette nicht mehr abreißen
 - **1.8.0** – 🔗 Mehrere Anschlüsse: die ganze eingecheckte Reisekette wird angezeigt (Anschluss → Anschluss → …), nicht mehr nur der nächste · ⏱️ Live-Umstiegszeiten zwischen den Fahrten aus Plan- und Echtzeitdaten mit Einschätzung (ok / knapp / gefährdet / verpasst / fällt aus), Gleiswechsel und Fußweg bei Stationswechsel · 🆕 Sensor „Nächster Umstieg“ · 🔁 „Anschluss ab … einchecken“ öffnet direkt die Abfahrten am Ziel der letzten Fahrt ab Ankunftszeit · 🧹 Gelöschte Check-ins verschwinden automatisch · 📄 `/dashboard/future` wird geblättert (die nächsten Fahrten stehen dort hinten)
