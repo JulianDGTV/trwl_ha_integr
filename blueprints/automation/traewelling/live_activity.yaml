@@ -8,7 +8,7 @@ blueprint:
     zur Ankunft. Endet die Fahrt, verschwindet die Anzeige wieder.
     Voraussetzung: Home Assistant 2026.7 oder neuer und die Companion-App.
   domain: automation
-  source_url: https://github.com/JulianDGTV/trwl_ha_integr/blob/main/blueprints/automation/traewelling/live_activity.yaml
+  source_url: https://github.com/v8b-kg/trwl_ha_integr/blob/main/blueprints/automation/traewelling/live_activity.yaml
   input:
     travelling:
       name: Träwelling „Unterwegs“
