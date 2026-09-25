@@ -16,7 +16,7 @@
  */
 
 const DOMAIN = "traewelling";
-const VERSION = "1.9.1";
+const VERSION = "1.9.3";
 
 const TYPES = [
   ["", "Alle"],
