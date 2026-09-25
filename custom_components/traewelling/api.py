@@ -7,50 +7,35 @@ import json
 import logging
 import time
 from email.utils import parsedate_to_datetime
-from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
 from aiohttp import ClientError, ClientSession
 
+from .cache import TtlCache
 from .const import DEFAULT_BASE_URL
 
 _LOGGER = logging.getLogger(__name__)
 
 TIMEOUT = 20
 
-
-def _version() -> str:
-    try:
-        manifest = json.loads((Path(__file__).parent / "manifest.json").read_text("utf-8"))
-        return str(manifest.get("version", "0"))
-    except (OSError, ValueError):
-        return "0"
-
-
 # Eindeutig identifizierbar für die Träwelling-Betreiber: Name, Version, Kontakt
 # und – sobald bekannt – der Träwelling-Account (@username), auf Wunsch der Betreiber.
-USER_AGENT_BASE = f"trwl-ha-integration/{_version()}"
 USER_AGENT_CONTACT = "+https://github.com/JulianDGTV/trwl_ha_integr"
-USER_AGENT = f"{USER_AGENT_BASE} (Home Assistant; {USER_AGENT_CONTACT})"
-
-def _error_text(status: int, body: str) -> str:
-    """Fehlermeldung aus der API-Antwort lesbar machen (JSON-„message“, Umlaute)."""
-    message = None
-    try:
-        data = json.loads(body)
-        if isinstance(data, dict):
-            message = data.get("message") or data.get("error")
-    except ValueError:
-        pass
-    if not isinstance(message, str) or not message.strip():
-        message = (body or "").strip()[:200] or "keine Details"
-    return f"{message} (HTTP {status})"
-
 
 # Fallback, wenn Träwelling 429 ohne Retry-After schickt.
 DEFAULT_RETRY_AFTER = 60
 MAX_RETRY_AFTER = 3600
+
+# Zwischenspeicher (Sekunden). Stationsdaten ändern sich praktisch nie,
+# Abfahrten und Fahrtverläufe nur kurz, damit mehrere Geräte bzw. Karte und
+# Hintergrund-Abfrage sich eine Antwort teilen.
+TTL_AUTOCOMPLETE = 6 * 3600
+TTL_NEARBY = 24 * 3600
+TTL_STATION_HISTORY = 10 * 60
+TTL_TICKETS = 10 * 60
+TTL_DEPARTURES = 20
+TTL_TRIP = 30
 
 
 class TraewellingError(Exception):
@@ -75,6 +60,38 @@ class TraewellingCheckinError(TraewellingError):
     """Check-in abgelehnt (z. B. Überschneidung mit anderer Fahrt)."""
 
 
+def _message(payload: Any, body: str) -> str:
+    """Fehlermeldung aus der API-Antwort lesbar machen (JSON-„message“, Umlaute)."""
+    message = None
+    if isinstance(payload, dict):
+        message = payload.get("message") or payload.get("error")
+    if not isinstance(message, str) or not message.strip():
+        message = (body or "").strip()[:200] or "keine Details"
+    return message
+
+
+def _data(payload: Any) -> Any:
+    """Träwelling verpackt Antworten meist in {"data": ...}."""
+    if isinstance(payload, dict) and "data" in payload:
+        return payload["data"]
+    return payload
+
+
+def _as_list(payload: Any) -> list[Any]:
+    data = _data(payload) if payload is not None else None
+    return data if isinstance(data, list) else []
+
+
+def _as_dict(payload: Any) -> dict[str, Any] | None:
+    data = _data(payload) if payload is not None else None
+    return data if isinstance(data, dict) else None
+
+
+def _has_next(payload: Any) -> bool:
+    links = payload.get("links") if isinstance(payload, dict) else None
+    return isinstance(links, dict) and bool(links.get("next"))
+
+
 class TraewellingApi:
     """Minimaler async Client für die Endpunkte, die wir brauchen."""
 
@@ -84,42 +101,40 @@ class TraewellingApi:
         token: str,
         base_url: str = DEFAULT_BASE_URL,
         username: str | None = None,
+        version: str = "0",
     ) -> None:
         self._session = session
         self._token = token
         self._base = base_url.rstrip("/")
+        self._version = version
+        self._username: str | None = username
         # Bis zu diesem Zeitpunkt (time.monotonic) werden keine Anfragen gesendet.
         self._blocked_until = 0.0
-        self._username: str | None = username
-        # False, wenn /dashboard/future mehr Seiten hatte als abgefragt wurden.
-        self.future_complete = True
+        self._cache = TtlCache()
 
     @property
     def user_agent(self) -> str:
         user = f"; @{self._username}" if self._username else ""
-        return f"{USER_AGENT_BASE} (Home Assistant; {USER_AGENT_CONTACT}{user})"
+        return f"trwl-ha-integration/{self._version} (Home Assistant; {USER_AGENT_CONTACT}{user})"
 
     @property
     def rate_limited_for(self) -> float:
         """Verbleibende Sperrzeit in Sekunden (0 = frei)."""
         return max(0.0, self._blocked_until - time.monotonic())
 
-    def _check_rate_limit(self) -> None:
-        remaining = self.rate_limited_for
-        if remaining > 0:
-            raise TraewellingRateLimitError(remaining)
+    # ------------------------------------------------------------------ #
+    # HTTP
+    # ------------------------------------------------------------------ #
 
-    def _handle_429(self, resp: Any, path: str) -> None:
+    def _block(self, retry_after: str | None, path: str) -> TraewellingRateLimitError:
         """Retry-After (Sekunden oder HTTP-Datum) auswerten und Sperre setzen."""
-        raw = resp.headers.get("Retry-After") if resp.headers else None
         wait: float = DEFAULT_RETRY_AFTER
-        if raw:
+        if retry_after:
             try:
-                wait = float(raw)
+                wait = float(retry_after)
             except ValueError:
                 try:
-                    when = parsedate_to_datetime(raw)
-                    wait = when.timestamp() - time.time()
+                    wait = parsedate_to_datetime(retry_after).timestamp() - time.time()
                 except (TypeError, ValueError):
                     wait = DEFAULT_RETRY_AFTER
         wait = min(max(wait, 1), MAX_RETRY_AFTER)
@@ -129,243 +144,238 @@ class TraewellingApi:
             path,
             wait,
         )
-        raise TraewellingRateLimitError(wait)
+        return TraewellingRateLimitError(wait)
 
-    async def _get(
+    async def _request(
         self,
+        method: str,
         path: str,
+        *,
         params: dict[str, Any] | None = None,
-        allow_404: bool = False,
-    ) -> Any:
-        url = f"{self._base}/api/v1/{path.lstrip('/')}"
+        body: dict[str, Any] | None = None,
+    ) -> tuple[int, Any, str]:
+        """Eine Anfrage senden → (Status, JSON oder None, Rohtext).
+
+        Die Antwort wird immer vollständig gelesen und freigegeben.
+        """
+        remaining = self.rate_limited_for
+        if remaining > 0:
+            raise TraewellingRateLimitError(remaining)
         headers = {
             "Authorization": f"Bearer {self._token}",
             "Accept": "application/json",
             "User-Agent": self.user_agent,
         }
-        self._check_rate_limit()
+        url = f"{self._base}/api/v1/{path.lstrip('/')}"
         try:
             async with asyncio.timeout(TIMEOUT):
-                resp = await self._session.get(url, headers=headers, params=params)
-                if resp.status == 429:
-                    self._handle_429(resp, path)
-                if resp.status in (401, 403):
-                    raise TraewellingAuthError(
-                        f"Nicht autorisiert ({resp.status}) für {path} – "
-                        "Token ungültig oder fehlender Scope"
-                    )
-                if resp.status == 404 and allow_404:
-                    return None
-                if resp.status >= 400:
-                    raise TraewellingError(_error_text(resp.status, await resp.text()))
-                payload = await resp.json(content_type=None)
+                async with self._session.request(
+                    method, url, headers=headers, params=params, json=body
+                ) as resp:
+                    if resp.status == 429:
+                        raise self._block(resp.headers.get("Retry-After"), path)
+                    text = await resp.text()
+                    status = resp.status
         except TraewellingError:
             raise
-        except asyncio.TimeoutError as err:
+        except TimeoutError as err:
             raise TraewellingError(f"Timeout bei {path}") from err
         except ClientError as err:
             raise TraewellingError(f"Verbindungsfehler bei {path}: {err}") from err
 
-        _LOGGER.debug("GET %s -> %s", path, payload)
+        try:
+            payload = json.loads(text) if text.strip() else None
+        except ValueError:
+            payload = None
+        if status in (401, 403):
+            raise TraewellingAuthError(
+                f"Nicht autorisiert ({status}) für {path} – Token ungültig oder fehlender Scope"
+            )
+        _LOGGER.debug("%s %s -> %s", method, path, status)
+        return status, payload, text
+
+    async def _get(
+        self, path: str, params: dict[str, Any] | None = None, allow_404: bool = False
+    ) -> Any:
+        status, payload, text = await self._request("GET", path, params=params)
+        if status == 404 and allow_404:
+            return None
+        if status >= 400:
+            raise TraewellingError(f"{_message(payload, text)} (HTTP {status})")
         return payload
-
-    async def _post(self, path: str, body: dict[str, Any]) -> Any:
-        """POST mit JSON-Body. Fachliche Fehler (400/409) als CheckinError."""
-        return await self._send("POST", path, body)
-
-    async def _put(self, path: str, body: dict[str, Any]) -> Any:
-        return await self._send("PUT", path, body)
 
     async def _send(
         self,
         method: str,
         path: str,
-        body: dict[str, Any] | None,
+        body: dict[str, Any] | None = None,
         conflict_message: str | None = None,
     ) -> Any:
-        url = f"{self._base}/api/v1/{path.lstrip('/')}"
-        headers = {
-            "Authorization": f"Bearer {self._token}",
-            "Accept": "application/json",
-            "User-Agent": self.user_agent,
-        }
-        self._check_rate_limit()
-        try:
-            async with asyncio.timeout(TIMEOUT):
-                resp = await self._session.request(method, url, headers=headers, json=body)
-                if resp.status == 429:
-                    self._handle_429(resp, path)
-                try:
-                    payload = await resp.json(content_type=None)
-                except ValueError:
-                    payload = None
-        except TraewellingError:
-            raise
-        except asyncio.TimeoutError as err:
-            raise TraewellingError(f"Timeout bei {path}") from err
-        except ClientError as err:
-            raise TraewellingError(f"Verbindungsfehler bei {path}: {err}") from err
-
-        if resp.status in (401, 403):
-            raise TraewellingAuthError(
-                f"Nicht autorisiert ({resp.status}) für {path} – "
-                "Token ungültig oder fehlender Scope"
-            )
-        if resp.status == 409:
+        """Schreibende Anfrage. Fachliche Fehler (400/409 …) als CheckinError."""
+        status, payload, _text = await self._request(method, path, body=body)
+        if status == 409:
             raise TraewellingCheckinError(
                 conflict_message
                 or "Du bist in diesem Zeitraum schon in eine andere Fahrt eingecheckt."
             )
-        if resp.status >= 400:
-            message = None
-            if isinstance(payload, dict):
-                message = payload.get("message") or payload.get("error")
-            raise TraewellingCheckinError(
-                str(message) if message else f"HTTP {resp.status} für {path}"
+        if status >= 400:
+            message = (
+                payload.get("message") or payload.get("error")
+                if isinstance(payload, dict)
+                else None
             )
-        _LOGGER.debug("%s %s -> %s", method, path, payload)
+            raise TraewellingCheckinError(
+                str(message) if message else f"HTTP {status} für {path}"
+            )
         return payload
 
-    @staticmethod
-    def _data(payload: Any) -> Any:
-        """Träwelling verpackt Antworten meist in {"data": ...}."""
-        if isinstance(payload, dict) and "data" in payload:
-            return payload["data"]
-        return payload
+    async def _pages(self, path: str, pages: int) -> tuple[list[dict[str, Any]], bool]:
+        """Bis zu `pages` Seiten laden → (Einträge, vollständig?)."""
+        items: list[dict[str, Any]] = []
+        for page in range(1, pages + 1):
+            payload = await self._get(path, params={"page": page}, allow_404=True)
+            batch = [x for x in _as_list(payload) if isinstance(x, dict)]
+            items.extend(batch)
+            if not batch or not _has_next(payload):
+                return items, True
+        return items, False
+
+    def _cached(self, key: tuple[Any, ...], ttl: float, fetch: Any) -> Any:
+        return self._cache.get_or_fetch(key, ttl, fetch)
+
+    def invalidate_own(self) -> None:
+        """Nach eigenen Änderungen (Check-in, Fahrkarte): betroffene Caches leeren."""
+        self._cache.invalidate(lambda key: key[0] in ("history", "tickets"))
+
+    # ------------------------------------------------------------------ #
+    # Lesen (read-statuses / read-statistics)
+    # ------------------------------------------------------------------ #
 
     async def async_get_self(self) -> dict[str, Any]:
         """Profil des authentifizierten Nutzers (Punkte, Gesamtdistanz, ...)."""
-        user = self._data(await self._get("auth/user")) or {}
+        user = _data(await self._get("auth/user")) or {}
         if isinstance(user, dict) and isinstance(user.get("username"), str):
             self._username = user["username"].strip() or None
         return user
 
     async def async_get_active_status(self) -> dict[str, Any] | None:
-        """Aktueller Check-in oder None, wenn gerade keine Fahrt läuft."""
-        payload = await self._get("user/statuses/active", allow_404=True)
-        if payload is None:
-            return None
-        return self._data(payload) or None
+        """Aktueller Check-in oder None (Träwelling: 204/404 ohne Fahrt)."""
+        return _as_dict(await self._get("user/statuses/active", allow_404=True)) or None
 
-    async def async_get_dashboard(self, pages: int = 2) -> list[dict[str, Any]]:
-        """GET /dashboard – neueste Status von dir und allen, denen du folgst."""
-        statuses: list[dict[str, Any]] = []
-        for page in range(1, pages + 1):
-            payload = await self._get("dashboard", params={"page": page}, allow_404=True)
-            items = self._data(payload) if payload is not None else None
-            if not isinstance(items, list) or not items:
-                break
-            statuses.extend(items)
-            links = payload.get("links") if isinstance(payload, dict) else None
-            if isinstance(links, dict) and not links.get("next"):
-                break
-        return statuses
+    async def async_get_dashboard_page(
+        self, page: int
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """GET /dashboard – eine Seite (15) der neuesten Status von dir und allen,
+        denen du folgst, absteigend nach Abfahrt → (Status, weitere Seite?)."""
+        payload = await self._get("dashboard", params={"page": page}, allow_404=True)
+        items = [x for x in _as_list(payload) if isinstance(x, dict)]
+        return items, bool(items) and _has_next(payload)
 
-    async def async_get_future(self, pages: int = 3) -> list[dict[str, Any]]:
-        """GET /dashboard/future – eigene Check-ins, die >20 min in der Zukunft starten.
+    async def async_get_future(
+        self, pages: int = 3
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """GET /dashboard/future – eigene Check-ins >20 min voraus → (Status, vollständig?).
 
         Träwelling sortiert absteigend (späteste zuerst, 15 je Seite) – die
         nächsten Fahrten stehen also hinten. Deshalb ggf. weiterblättern.
         """
-        statuses: list[dict[str, Any]] = []
-        self.future_complete = False
-        for page in range(1, pages + 1):
-            payload = await self._get("dashboard/future", params={"page": page}, allow_404=True)
-            items = self._data(payload) if payload is not None else None
-            if not isinstance(items, list) or not items:
-                self.future_complete = True
-                break
-            statuses.extend(items)
-            links = payload.get("links") if isinstance(payload, dict) else None
-            if not isinstance(links, dict) or not links.get("next"):
-                self.future_complete = True
-                break
-        return statuses
+        return await self._pages("dashboard/future", pages)
 
     async def async_get_status(self, status_id: Any) -> dict[str, Any] | None:
         """GET /status/{id} – ein einzelner Status (None = gelöscht/nicht sichtbar)."""
-        payload = await self._get(f"status/{int(status_id)}", allow_404=True)
-        data = self._data(payload) if payload is not None else None
-        return data if isinstance(data, dict) else None
+        return _as_dict(await self._get(f"status/{int(status_id)}", allow_404=True))
 
     async def async_get_statistics_overview(
         self, date_from: str, date_to: str
     ) -> dict[str, Any] | None:
-        """GET /statistics/overview – benötigt Scope read-statistics."""
-        payload = await self._get(
-            "statistics/overview",
-            params={"from": date_from, "until": date_to},
-            allow_404=True,
+        """GET /statistics/overview – serverseitig 1 h gecacht."""
+        return _as_dict(
+            await self._get(
+                "statistics/overview",
+                params={"from": date_from, "until": date_to},
+                allow_404=True,
+            )
         )
-        return self._data(payload) if payload is not None else None
 
     async def async_get_statistics_history(self) -> dict[str, Any] | None:
-        """GET /statistics/history – Check-ins/Distanz je Jahr, Monat und Woche."""
-        payload = await self._get("statistics/history", allow_404=True)
-        return self._data(payload) if payload is not None else None
+        """GET /statistics/history – Jahre/Monate/Wochen, serverseitig 6 h gecacht."""
+        return _as_dict(await self._get("statistics/history", allow_404=True))
 
     async def async_get_statistics_favorites(
         self, date_from: str, date_to: str
     ) -> dict[str, Any] | None:
         """GET /statistics/favorites – Lieblingsstationen, -linien, -strecken."""
-        payload = await self._get(
-            "statistics/favorites",
-            params={"from": date_from, "until": date_to},
-            allow_404=True,
+        return _as_dict(
+            await self._get(
+                "statistics/favorites",
+                params={"from": date_from, "until": date_to},
+                allow_404=True,
+            )
         )
-        return self._data(payload) if payload is not None else None
 
     async def async_get_statistics_personal(
         self, date_from: str, date_to: str
     ) -> dict[str, Any] | None:
         """GET /statistics – Verkehrsmittel, Betreiber, Reisezwecke."""
-        payload = await self._get(
-            "statistics", params={"from": date_from, "until": date_to}, allow_404=True
+        return _as_dict(
+            await self._get(
+                "statistics",
+                params={"from": date_from, "until": date_to},
+                allow_404=True,
+            )
         )
-        return self._data(payload) if payload is not None else None
 
     async def async_get_leaderboard_friends(self) -> list[dict[str, Any]] | None:
         """GET /leaderboard/friends – Rangliste der letzten 7 Tage unter Freunden."""
-        payload = await self._get("leaderboard/friends", allow_404=True)
-        data = self._data(payload) if payload is not None else None
+        data = _data(await self._get("leaderboard/friends", allow_404=True))
         return data if isinstance(data, list) else None
 
     # ------------------------------------------------------------------ #
-    # Check-in (Scope write-statuses)
+    # Check-in (write-statuses) – lesende Aufrufe mit Zwischenspeicher
     # ------------------------------------------------------------------ #
 
     async def async_search_stations(self, query: str) -> list[dict[str, Any]]:
         """GET /trains/station/autocomplete/{query} – max. 10 Treffer."""
-        payload = await self._get(
-            f"trains/station/autocomplete/{quote(query.strip(), safe='')}",
-            allow_404=True,
+        query = query.strip()
+
+        async def fetch() -> list[dict[str, Any]]:
+            payload = await self._get(
+                f"trains/station/autocomplete/{quote(query, safe='')}", allow_404=True
+            )
+            return _as_list(payload)
+
+        return await self._cached(
+            ("autocomplete", query.casefold()), TTL_AUTOCOMPLETE, fetch
         )
-        data = self._data(payload) if payload is not None else None
-        return data if isinstance(data, list) else []
 
     async def async_nearby_station(
         self, latitude: float, longitude: float
     ) -> dict[str, Any] | None:
-        """GET /trains/station/nearby – nächste Station zu Koordinaten."""
-        payload = await self._get(
-            "trains/station/nearby",
-            params={"latitude": latitude, "longitude": longitude},
-            allow_404=True,
-        )
-        data = self._data(payload) if payload is not None else None
-        return data if isinstance(data, dict) else None
+        """GET /trains/station/nearby – nächste Station zu Koordinaten (~10 m genau gecacht)."""
+        lat, lon = round(latitude, 4), round(longitude, 4)
+
+        async def fetch() -> dict[str, Any] | None:
+            # 404 = keine Station in der Nähe – wird mitgespeichert, andere
+            # Fehler nicht.
+            payload = await self._get(
+                "trains/station/nearby",
+                params={"latitude": lat, "longitude": lon},
+                allow_404=True,
+            )
+            return _as_dict(payload)
+
+        return await self._cached(("nearby", lat, lon), TTL_NEARBY, fetch)
 
     async def async_station_history(self) -> list[dict[str, Any]]:
         """GET /trains/station/history – zuletzt genutzte Stationen."""
-        payload = await self._get("trains/station/history", allow_404=True)
-        data = self._data(payload) if payload is not None else None
-        return data if isinstance(data, list) else []
+
+        async def fetch() -> list[dict[str, Any]]:
+            return _as_list(await self._get("trains/station/history", allow_404=True))
+
+        return await self._cached(("history",), TTL_STATION_HISTORY, fetch)
 
     async def async_departures(
-        self,
-        station_id: int,
-        when: str | None = None,
-        travel_type: str | None = None,
+        self, station_id: int, when: str | None = None, travel_type: str | None = None
     ) -> dict[str, Any]:
         """GET /station/{id}/departures – Live-Abfahrten inkl. meta.station/times."""
         params: dict[str, Any] = {}
@@ -373,21 +383,33 @@ class TraewellingApi:
             params["when"] = when
         if travel_type:
             params["travelType"] = travel_type
-        payload = await self._get(f"station/{int(station_id)}/departures", params=params)
-        if not isinstance(payload, dict):
-            return {"data": [], "meta": {}}
-        return payload
+
+        async def fetch() -> dict[str, Any]:
+            payload = await self._get(
+                f"station/{int(station_id)}/departures", params=params
+            )
+            return payload if isinstance(payload, dict) else {"data": [], "meta": {}}
+
+        key = ("departures", int(station_id), when or "", travel_type or "")
+        return await self._cached(key, TTL_DEPARTURES, fetch)
 
     async def async_trip(self, trip_id: str, line_name: str) -> dict[str, Any]:
         """GET /trains/trip – Fahrt mit allen Halten."""
-        payload = await self._get(
-            "trains/trip", params={"hafasTripId": trip_id, "lineName": line_name}
-        )
-        return self._data(payload) or {}
+
+        async def fetch() -> dict[str, Any]:
+            payload = await self._get(
+                "trains/trip", params={"hafasTripId": trip_id, "lineName": line_name}
+            )
+            return _data(payload) or {}
+
+        return await self._cached(("trip", trip_id, line_name), TTL_TRIP, fetch)
 
     async def async_checkin(self, body: dict[str, Any]) -> dict[str, Any]:
         """POST /trains/checkin."""
-        return self._data(await self._post("trains/checkin", body)) or {}
+        try:
+            return _data(await self._send("POST", "trains/checkin", body)) or {}
+        finally:
+            self.invalidate_own()
 
     # ------------------------------------------------------------------ #
     # Fahrkarten
@@ -396,16 +418,23 @@ class TraewellingApi:
     async def async_tickets(self, valid_on: str | None = None) -> list[dict[str, Any]]:
         """GET /tickets – eigene Fahrkarten, optional nur die am Tag gültigen."""
         params = {"validOn": valid_on} if valid_on else None
-        payload = await self._get("tickets", params=params, allow_404=True)
-        data = self._data(payload) if payload is not None else None
-        return data if isinstance(data, list) else []
+
+        async def fetch() -> list[dict[str, Any]]:
+            return _as_list(await self._get("tickets", params=params, allow_404=True))
+
+        return await self._cached(("tickets", valid_on or ""), TTL_TICKETS, fetch)
 
     async def async_assign_ticket(self, status_id: int, ticket_id: str | None) -> Any:
         """PUT /statuses/{id}/tickets – Fahrkarte zuordnen (None = entfernen)."""
-        return await self._put(f"statuses/{int(status_id)}/tickets", {"ticketId": ticket_id})
+        try:
+            return await self._send(
+                "PUT", f"statuses/{int(status_id)}/tickets", {"ticketId": ticket_id}
+            )
+        finally:
+            self.invalidate_own()
 
     # ------------------------------------------------------------------ #
-    # Likes (Scope write-likes)
+    # Likes (write-likes)
     # ------------------------------------------------------------------ #
 
     async def async_like(self, status_id: int, like: bool = True) -> dict[str, Any]:
@@ -413,8 +442,6 @@ class TraewellingApi:
         payload = await self._send(
             "POST" if like else "DELETE",
             f"status/{int(status_id)}/like",
-            None,
             conflict_message="Diesen Status hast du schon geliked.",
         )
-        data = self._data(payload)
-        return data if isinstance(data, dict) else {}
+        return _as_dict(payload) or {}

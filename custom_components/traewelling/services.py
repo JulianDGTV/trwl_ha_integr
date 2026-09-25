@@ -11,7 +11,7 @@ import math
 from typing import Any
 
 import voluptuous as vol
-
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import (
     HomeAssistant,
     ServiceCall,
@@ -30,16 +30,30 @@ from .api import (
 )
 from .const import DOMAIN
 from .coordinator import TraewellingCoordinator
-from .helpers import first
+from .helpers import distance_m, first
 
 _LOGGER = logging.getLogger(__name__)
 
 ATTR_ENTRY = "config_entry_id"
 
 TRAVEL_TYPES = [
-    "express", "regional", "suburban", "bus", "ferry", "subway", "tram", "taxi", "plane",
+    "express",
+    "regional",
+    "suburban",
+    "bus",
+    "ferry",
+    "subway",
+    "tram",
+    "taxi",
+    "plane",
 ]
-VISIBILITY = {"public": 0, "unlisted": 1, "followers": 2, "private": 3, "authenticated": 4}
+VISIBILITY = {
+    "public": 0,
+    "unlisted": 1,
+    "followers": 2,
+    "private": 3,
+    "authenticated": 4,
+}
 BUSINESS = {"private": 0, "business": 1, "commute": 2}
 
 SCOPE_HINT = (
@@ -149,23 +163,25 @@ def _departure(raw: dict[str, Any]) -> dict[str, Any]:
 # „In der Nähe": Träwelling sucht serverseitig nur in einem kleinen Umkreis
 # (Standard ~200 m). Findet es nichts, fragen wir Punkte auf immer größeren
 # Ringen um den Standort ab und sortieren die Treffer nach echter Entfernung.
-NEARBY_RINGS: tuple[tuple[int, int], ...] = ((400, 4), (1000, 6), (2000, 8))  # (Meter, Punkte)
+NEARBY_RINGS: tuple[tuple[int, int], ...] = (
+    (400, 4),
+    (1000, 6),
+    (2000, 8),
+)  # (Meter, Punkte)
 
 
-def _distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    r = 6371000.0
-    p1, p2 = math.radians(lat1), math.radians(lat2)
-    dp, dl = p2 - p1, math.radians(lon2 - lon1)
-    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    return 2 * r * math.asin(math.sqrt(a))
-
-
-def _ring(lat: float, lon: float, meters: int, points: int) -> list[tuple[float, float]]:
+def _ring(
+    lat: float, lon: float, meters: int, points: int
+) -> list[tuple[float, float]]:
     out = []
     for i in range(points):
         angle = 2 * math.pi * i / points
         dlat = meters * math.cos(angle) / 111320.0
-        dlon = meters * math.sin(angle) / (111320.0 * max(0.01, math.cos(math.radians(lat))))
+        dlon = (
+            meters
+            * math.sin(angle)
+            / (111320.0 * max(0.01, math.cos(math.radians(lat))))
+        )
         out.append((lat + dlat, lon + dlon))
     return out
 
@@ -177,20 +193,21 @@ async def _nearby(api: Any, lat: float, lon: float) -> dict[str, Any]:
     def add(raw: Any) -> None:
         st = _station(raw)
         if st and st["id"] not in found:
-            if isinstance(st.get("latitude"), (int, float)) and isinstance(st.get("longitude"), (int, float)):
-                st["distance_m"] = round(_distance_m(lat, lon, st["latitude"], st["longitude"]))
+            if isinstance(st.get("latitude"), (int, float)) and isinstance(
+                st.get("longitude"), (int, float)
+            ):
+                st["distance_m"] = round(
+                    distance_m(lat, lon, st["latitude"], st["longitude"])
+                )
             found[st["id"]] = st
 
     async def probe(plat: float, plon: float) -> Any:
         try:
             return await api.async_nearby_station(plat, plon)
-        except (TraewellingRateLimitError, TraewellingAuthError) as err:
-            async def _reraise() -> None:
-                raise err
-
-            return await _guard(_reraise())  # verständliche Fehlermeldung
+        except (TraewellingRateLimitError, TraewellingAuthError):
+            raise  # → _guard: verständliche Fehlermeldung
         except TraewellingError:
-            return None  # „keine Station gefunden" o. Ä. → nächster Punkt
+            return None  # Serverfehler an diesem Punkt → nächster Punkt
 
     add(await probe(lat, lon))
     radius = 200
@@ -221,12 +238,15 @@ def _ticket(raw: Any) -> dict[str, Any] | None:
 def _stop(raw: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": raw.get("id"),
-        "name": first(raw, "name", default=None) or (raw.get("station") or {}).get("name"),
+        "name": first(raw, "name", default=None)
+        or (raw.get("station") or {}).get("name"),
         "arrival_planned": first(raw, "arrivalPlanned", "arrival"),
         "arrival_real": raw.get("arrivalReal"),
         "departure_planned": first(raw, "departurePlanned", "departure"),
         "departure_real": raw.get("departureReal"),
-        "platform": first(raw, "arrivalPlatformReal", "arrivalPlatformPlanned", "platform"),
+        "platform": first(
+            raw, "arrivalPlatformReal", "arrivalPlatformPlanned", "platform"
+        ),
         "cancelled": bool(raw.get("cancelled")),
     }
 
@@ -237,7 +257,12 @@ def _stop(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def _coordinator(hass: HomeAssistant, call: ServiceCall) -> TraewellingCoordinator:
-    coordinators: dict[str, TraewellingCoordinator] = hass.data.get(DOMAIN, {})
+    """Coordinator des gewählten (bzw. ersten) geladenen Träwelling-Kontos."""
+    coordinators = {
+        entry.entry_id: entry.runtime_data
+        for entry in hass.config_entries.async_entries(DOMAIN)
+        if entry.state is ConfigEntryState.LOADED
+    }
     if not coordinators:
         raise ServiceValidationError("Träwelling ist nicht eingerichtet.")
     entry_id = call.data.get(ATTR_ENTRY)
@@ -248,14 +273,18 @@ def _coordinator(hass: HomeAssistant, call: ServiceCall) -> TraewellingCoordinat
     return next(iter(coordinators.values()))
 
 
+def _rate_limited(err: TraewellingRateLimitError) -> HomeAssistantError:
+    return HomeAssistantError(
+        f"Träwelling bremst gerade (Rate-Limit). Bitte in {err.retry_after} s erneut versuchen."
+    )
+
+
 async def _guard(coro):
     """API-Fehler in verständliche HA-Fehler übersetzen."""
     try:
         return await coro
     except TraewellingRateLimitError as err:
-        raise HomeAssistantError(
-            f"Träwelling bremst gerade (Rate-Limit). Bitte in {err.retry_after} s erneut versuchen."
-        ) from err
+        raise _rate_limited(err) from err
     except TraewellingAuthError as err:
         raise HomeAssistantError(SCOPE_HINT) from err
     except TraewellingCheckinError as err:
@@ -280,7 +309,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
             return {"stations": [s for s in map(_station, stations) if s]}
 
         if lat is not None and lon is not None:
-            return await _nearby(api, lat, lon)
+            return await _guard(_nearby(api, lat, lon))
 
         # Ohne Suche: Heimatbahnhof + zuletzt genutzte Stationen.
         history = await _guard(api.async_station_history())
@@ -310,7 +339,9 @@ def async_setup_services(hass: HomeAssistant) -> None:
 
     async def get_trip(call: ServiceCall) -> ServiceResponse:
         api = _coordinator(hass, call).api
-        trip = await _guard(api.async_trip(call.data["trip_id"], call.data["line_name"]))
+        trip = await _guard(
+            api.async_trip(call.data["trip_id"], call.data["line_name"])
+        )
         stops = trip.get("stopovers") or []
         return {
             "line_name": trip.get("lineName"),
@@ -363,7 +394,9 @@ def async_setup_services(hass: HomeAssistant) -> None:
             "ticket_assigned": ticket_ok,
             "ticket_error": ticket_error,
             "status_id": status.get("id"),
-            "url": f"https://traewelling.de/status/{status['id']}" if status.get("id") else None,
+            "url": f"https://traewelling.de/status/{status['id']}"
+            if status.get("id")
+            else None,
             "points": points.get("points") if isinstance(points, dict) else points,
             "also_on_this_connection": [
                 first(s.get("userDetails") or {}, "displayName", "username")
@@ -384,9 +417,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
         except TraewellingCheckinError:
             result = {}  # 409 = war schon (nicht) geliked → Zielzustand ist erreicht
         except TraewellingRateLimitError as err:
-            raise HomeAssistantError(
-                f"Träwelling bremst gerade (Rate-Limit). Bitte in {err.retry_after} s erneut versuchen."
-            ) from err
+            raise _rate_limited(err) from err
         except TraewellingError as err:
             raise HomeAssistantError(f"Like fehlgeschlagen: {err}") from err
         count = result.get("count") if isinstance(result.get("count"), int) else None
@@ -394,7 +425,11 @@ def async_setup_services(hass: HomeAssistant) -> None:
         return {"status_id": status_id, "liked": want, "likes": count}
 
     hass.services.async_register(
-        DOMAIN, "like", like, LIKE_SCHEMA, supports_response=SupportsResponse.OPTIONAL,
+        DOMAIN,
+        "like",
+        like,
+        LIKE_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
     )
 
     async def get_tickets(call: ServiceCall) -> ServiceResponse:
@@ -407,9 +442,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
             # Funktion für das Konto nicht verfügbar oder Scope fehlt → Feld ausblenden.
             return {"available": False, "tickets": [], "suggested": None}
         except TraewellingRateLimitError as err:
-            raise HomeAssistantError(
-                f"Träwelling bremst gerade (Rate-Limit). Bitte in {err.retry_after} s erneut versuchen."
-            ) from err
+            raise _rate_limited(err) from err
         except TraewellingError as err:
             raise HomeAssistantError(f"Fahrkarten nicht abrufbar: {err}") from err
 
@@ -425,22 +458,37 @@ def async_setup_services(hass: HomeAssistant) -> None:
         }
 
     hass.services.async_register(
-        DOMAIN, "get_tickets", get_tickets, TICKETS_SCHEMA,
+        DOMAIN,
+        "get_tickets",
+        get_tickets,
+        TICKETS_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
     hass.services.async_register(
-        DOMAIN, "search_stations", search_stations, SEARCH_SCHEMA,
+        DOMAIN,
+        "search_stations",
+        search_stations,
+        SEARCH_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
     hass.services.async_register(
-        DOMAIN, "get_departures", get_departures, DEPARTURES_SCHEMA,
+        DOMAIN,
+        "get_departures",
+        get_departures,
+        DEPARTURES_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
     hass.services.async_register(
-        DOMAIN, "get_trip", get_trip, TRIP_SCHEMA,
+        DOMAIN,
+        "get_trip",
+        get_trip,
+        TRIP_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
     hass.services.async_register(
-        DOMAIN, "checkin", checkin, CHECKIN_SCHEMA,
+        DOMAIN,
+        "checkin",
+        checkin,
+        CHECKIN_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )

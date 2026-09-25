@@ -13,7 +13,6 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     PERCENTAGE,
     EntityCategory,
@@ -24,8 +23,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN
-from .coordinator import TraewellingCoordinator
+from .coordinator import TraewellingConfigEntry
 from .entity import TraewellingEntity
 from .helpers import (
     arrival,
@@ -99,7 +97,9 @@ def _upcoming_attrs(data: dict[str, Any]) -> dict[str, Any]:
     attrs = _status_attrs(status)
     dep = departure(status)
     if dep is not None:
-        attrs["minutes_until"] = max(0, int((dep - dt_util.utcnow()).total_seconds() // 60))
+        attrs["minutes_until"] = max(
+            0, int((dep - dt_util.utcnow()).total_seconds() // 60)
+        )
     attrs["after_current"] = _active(data) is not None
     chain = _chain(data)
     legs = []
@@ -250,7 +250,9 @@ def _ride(status: Any) -> dict[str, Any] | None:
         "distance_km": meters_to_km(checkin.get("distance")),
         "duration_minutes": checkin.get("duration"),
         "date": first(origin, "departurePlanned", "departure"),
-        "url": f"https://traewelling.de/status/{status['id']}" if status.get("id") else None,
+        "url": f"https://traewelling.de/status/{status['id']}"
+        if status.get("id")
+        else None,
     }
 
 
@@ -334,7 +336,11 @@ def _operators(data: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(rows, list):
         return []
     out = [
-        {"name": r.get("name"), "count": r.get("count"), "hours": minutes_to_hours(r.get("duration"))}
+        {
+            "name": r.get("name"),
+            "count": r.get("count"),
+            "hours": minutes_to_hours(r.get("duration")),
+        }
         for r in rows
         if isinstance(r, dict)
     ]
@@ -377,7 +383,10 @@ def _leaderboard(data: dict[str, Any]) -> list[dict[str, Any]]:
                 "distance_km": meters_to_km(r.get("totalDistance")),
                 "hours": minutes_to_hours(r.get("totalDuration")),
                 "me": str(user.get("id")) in my_ids
-                or (bool(me.get("username")) and user.get("username") == me.get("username")),
+                or (
+                    bool(me.get("username"))
+                    and user.get("username") == me.get("username")
+                ),
             }
         )
     return out
@@ -478,6 +487,7 @@ ACTIVE_SENSORS: tuple[TrwlSensorDescription, ...] = (
     ),
 )
 
+
 def _friends(data: dict[str, Any]) -> list[dict[str, Any]]:
     friends = data.get("friends")
     return friends if isinstance(friends, list) else []
@@ -523,7 +533,9 @@ STATS_SENSORS: tuple[TrwlSensorDescription, ...] = (
         key="points_total",
         name="Punkte gesamt",
         icon="mdi:star",
-        state_class=SensorStateClass.TOTAL_INCREASING,
+        # Träwelling liefert hier die Punkte der letzten 7 Tage – der Wert
+        # sinkt also auch wieder (daher kein TOTAL_INCREASING).
+        state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda d: first(_user(d), "points", "totalPoints"),
     ),
     TrwlSensorDescription(
@@ -533,8 +545,10 @@ STATS_SENSORS: tuple[TrwlSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfLength.KILOMETERS,
         state_class=SensorStateClass.TOTAL_INCREASING,
         icon="mdi:map-marker-distance",
-        value_fn=lambda d: meters_to_km(first(_user(d), "totalDistance", "trainDistance"))
-        or _stat_km(d),
+        value_fn=lambda d: (
+            meters_to_km(first(_user(d), "totalDistance", "trainDistance"))
+            or _stat_km(d)
+        ),
     ),
     TrwlSensorDescription(
         key="duration_total",
@@ -542,7 +556,9 @@ STATS_SENSORS: tuple[TrwlSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfTime.HOURS,
         state_class=SensorStateClass.TOTAL_INCREASING,
         icon="mdi:timer-outline",
-        value_fn=lambda d: minutes_to_hours(first(_user(d), "totalDuration", "trainDuration")),
+        value_fn=lambda d: minutes_to_hours(
+            first(_user(d), "totalDuration", "trainDuration")
+        ),
     ),
     TrwlSensorDescription(
         key="checkins_total",
@@ -621,7 +637,8 @@ STATS_SENSORS: tuple[TrwlSensorDescription, ...] = (
         name="Monatsverlauf",
         icon="mdi:chart-bar",
         value_fn=lambda d: next(
-            (m.get("checkins") for m in (d.get("monthly") or []) if m.get("current")), None
+            (m.get("checkins") for m in (d.get("monthly") or []) if m.get("current")),
+            None,
         ),
         attr_fn=lambda d: {"months": d.get("monthly") or []},
     ),
@@ -652,10 +669,14 @@ STATS_SENSORS: tuple[TrwlSensorDescription, ...] = (
         key="favorite_route",
         name="Lieblingsstrecke",
         icon="mdi:swap-horizontal",
-        value_fn=lambda d: next((_fav_route_label(r) for r in _fav(d, "routes")[:1]), None),
+        value_fn=lambda d: next(
+            (_fav_route_label(r) for r in _fav(d, "routes")[:1]), None
+        ),
         attr_fn=lambda d: {
             "period": "Dieses Jahr",
-            "top": [{**r, "label": _fav_route_label(r)} for r in _fav(d, "routes")[:10]],
+            "top": [
+                {**r, "label": _fav_route_label(r)} for r in _fav(d, "routes")[:10]
+            ],
         },
     ),
     TrwlSensorDescription(
@@ -695,14 +716,19 @@ STATS_SENSORS: tuple[TrwlSensorDescription, ...] = (
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: TraewellingConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Sensoren anlegen."""
-    coordinator: TraewellingCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator = entry.runtime_data
     async_add_entities(
         TraewellingSensor(coordinator, description)
-        for description in (*ACTIVE_SENSORS, *UPCOMING_SENSORS, *FRIENDS_SENSORS, *STATS_SENSORS)
+        for description in (
+            *ACTIVE_SENSORS,
+            *UPCOMING_SENSORS,
+            *FRIENDS_SENSORS,
+            *STATS_SENSORS,
+        )
     )
 
 
@@ -710,18 +736,29 @@ class TraewellingSensor(TraewellingEntity, SensorEntity):
     """Ein einzelner Träwelling-Sensor."""
 
     entity_description: TrwlSensorDescription
-    # Große, sich oft ändernde Listen nicht in die Datenbank schreiben.
-    _unrecorded_attributes = frozenset({"chain"})
+    # Große bzw. sich ständig ändernde Listen nicht in die Datenbank schreiben
+    # (im Zustand bleiben sie für Karten und Templates vollständig erhalten).
+    _unrecorded_attributes = frozenset(
+        {
+            "chain",
+            "warnings",
+            "trips",
+            "names",
+            "leaderboard",
+            "top",
+            "months",
+            "categories",
+            "operators",
+            "purposes",
+        }
+    )
 
     @property
     def native_value(self) -> Any:
         try:
-            value = self.entity_description.value_fn(self.coordinator.data or {})
+            return self.entity_description.value_fn(self.coordinator.data or {})
         except (TypeError, ValueError, AttributeError):
             return None
-        if isinstance(value, datetime):
-            return value
-        return value
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:

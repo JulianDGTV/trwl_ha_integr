@@ -6,7 +6,6 @@ import logging
 from typing import Any
 
 import voluptuous as vol
-
 from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,
@@ -90,9 +89,7 @@ class TraewellingConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="user", data_schema=STEP_USER_SCHEMA, errors=errors
         )
 
-    async def async_step_reauth(
-        self, entry_data: dict[str, Any]
-    ) -> ConfigFlowResult:
+    async def async_step_reauth(self, entry_data: dict[str, Any]) -> ConfigFlowResult:
         self._reauth_entry = self.hass.config_entries.async_get_entry(
             self.context["entry_id"]
         )
@@ -104,12 +101,13 @@ class TraewellingConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         assert self._reauth_entry is not None
         if user_input is not None:
-            data = {**self._reauth_entry.data, CONF_TOKEN: user_input[CONF_TOKEN].strip()}
+            data = {
+                **self._reauth_entry.data,
+                CONF_TOKEN: user_input[CONF_TOKEN].strip(),
+            }
             _, errors = await self._async_validate(data)
             if not errors:
-                return self.async_update_reload_and_abort(
-                    self._reauth_entry, data=data
-                )
+                return self.async_update_reload_and_abort(self._reauth_entry, data=data)
 
         return self.async_show_form(
             step_id="reauth_confirm",

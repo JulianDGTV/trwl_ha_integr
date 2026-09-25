@@ -2,21 +2,20 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from pathlib import Path
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_TOKEN, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
+from homeassistant.loader import async_get_integration
 
 from .api import TraewellingApi
 from .const import CONF_BASE_URL, DEFAULT_BASE_URL, DOMAIN
-from .coordinator import TraewellingCoordinator
+from .coordinator import TraewellingConfigEntry, TraewellingCoordinator
 from .services import async_setup_services
 
 _LOGGER = logging.getLogger(__name__)
@@ -44,10 +43,7 @@ async def _async_register_card(hass: HomeAssistant) -> None:
        wann die Integration beim Start fertig ist.
     3. Fallback für YAML-Dashboards: extra_js_url.
     """
-    manifest = await hass.async_add_executor_job(
-        (Path(__file__).parent / "manifest.json").read_text, "utf-8"
-    )
-    version = json.loads(manifest).get("version", "0")
+    version = (await async_get_integration(hass, DOMAIN)).version or "0"
     url = f"{CARD_URL_BASE}?v={version}"
 
     try:
@@ -68,7 +64,7 @@ async def _async_register_card(hass: HomeAssistant) -> None:
         from homeassistant.components.frontend import add_extra_js_url
 
         add_extra_js_url(hass, url)
-    except Exception as err:  # noqa: BLE001
+    except Exception as err:  # noqa: BLE001 – darf den Start nie verhindern
         _LOGGER.warning(
             "Check-in-Karte konnte nicht automatisch geladen werden (%s). "
             "Bitte als Dashboard-Ressource (JavaScript-Modul) hinzufügen: %s",
@@ -112,37 +108,40 @@ async def _async_register_resource(hass: HomeAssistant, url: str) -> bool:
 
         await resources.async_create_item({"res_type": "module", "url": url})
         return True
-    except Exception as err:  # noqa: BLE001
+    except Exception as err:  # noqa: BLE001 – darf den Start nie verhindern
         _LOGGER.debug("Lovelace-Ressource konnte nicht registriert werden: %s", err)
         return False
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: TraewellingConfigEntry) -> bool:
     """Config Entry einrichten."""
+    # Titel ist „Träwelling (username)“ → der User-Agent kennt den Account ab
+    # der ersten Anfrage (wird danach aus /auth/user aktualisiert).
+    match = re.search(r"\(([^()]+)\)\s*$", entry.title or "")
     api = TraewellingApi(
         async_get_clientsession(hass),
         entry.data[CONF_TOKEN],
         entry.data.get(CONF_BASE_URL, DEFAULT_BASE_URL),
-        # Titel ist „Träwelling (username)“ → User-Agent kennt den Account ab
-        # der ersten Anfrage (wird danach aus /auth/user aktualisiert).
-        username=(m.group(1) if (m := re.search(r"\(([^()]+)\)\s*$", entry.title or "")) else None),
+        username=match.group(1) if match else None,
+        version=(await async_get_integration(hass, DOMAIN)).version or "0",
     )
     coordinator = TraewellingCoordinator(hass, entry, api)
     await coordinator.async_config_entry_first_refresh()
 
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+    entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(
+    hass: HomeAssistant, entry: TraewellingConfigEntry
+) -> bool:
     """Config Entry entladen."""
-    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if unloaded:
-        hass.data[DOMAIN].pop(entry.entry_id, None)
-    return unloaded
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 
-async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+async def _async_reload_entry(
+    hass: HomeAssistant, entry: TraewellingConfigEntry
+) -> None:
     await hass.config_entries.async_reload(entry.entry_id)

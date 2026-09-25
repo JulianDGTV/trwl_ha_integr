@@ -21,8 +21,10 @@ from .helpers import (
     departure,
     destination_of,
     first,
+    is_own,
     meters_to_km,
     origin_of,
+    user_of,
 )
 
 # Kleiner Puffer, damit eine Fahrt nicht in der Sekunde der Abfahrt
@@ -30,19 +32,6 @@ from .helpers import (
 GRACE = timedelta(minutes=2)
 # Bevorstehende Fahrten von Freunden so weit voraus zeigen (wie bei den eigenen).
 UPCOMING_HORIZON = timedelta(minutes=60)
-
-
-def _user_of(status: dict[str, Any]) -> dict[str, Any]:
-    details = status.get("userDetails")
-    if isinstance(details, dict):
-        return details
-    # Altes Format (vor 2024-08): Felder direkt am Status.
-    return {
-        "id": status.get("user"),
-        "username": status.get("username"),
-        "displayName": status.get("username"),
-        "profilePicture": status.get("profilePicture"),
-    }
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -65,7 +54,7 @@ def trip_of(status: dict[str, Any], now: datetime) -> dict[str, Any] | None:
     if not upcoming and now > arr + GRACE:
         return None
 
-    user = _user_of(status)
+    user = user_of(status)
     checkin = checkin_of(status) or {}
     origin = origin_of(status) or {}
     dest = destination_of(status) or {}
@@ -87,8 +76,12 @@ def trip_of(status: dict[str, Any], now: datetime) -> dict[str, Any] | None:
         "destination": dest.get("name"),
         "departure": _iso(dep),
         "arrival": _iso(arr),
-        "origin_platform": first(origin, "departurePlatformReal", "departurePlatformPlanned", "platform"),
-        "destination_platform": first(dest, "arrivalPlatformReal", "arrivalPlatformPlanned", "platform"),
+        "origin_platform": first(
+            origin, "departurePlatformReal", "departurePlatformPlanned", "platform"
+        ),
+        "destination_platform": first(
+            dest, "arrivalPlatformReal", "arrivalPlatformPlanned", "platform"
+        ),
         "departure_planned": first(origin, "departurePlanned", "departure"),
         "arrival_planned": first(dest, "arrivalPlanned", "arrival"),
         "delay_arrival": delay_minutes(arrival(status, real=False), arr),
@@ -102,7 +95,9 @@ def trip_of(status: dict[str, Any], now: datetime) -> dict[str, Any] | None:
         "likes": status.get("likes") if isinstance(status.get("likes"), int) else None,
         "liked": bool(status.get("liked")),
         "likable": status.get("isLikable", True) is not False,
-        "url": f"https://traewelling.de/status/{status['id']}" if status.get("id") else None,
+        "url": f"https://traewelling.de/status/{status['id']}"
+        if status.get("id")
+        else None,
     }
 
 
@@ -117,19 +112,15 @@ def active_friend_trips(
     """
     if not isinstance(statuses, list):
         return []
-    own = own_user or {}
-    own_ids = {str(v) for v in (own.get("id"), own.get("uuid")) if v is not None}
-    own_name = own.get("username")
-
     now = dt_util.utcnow()
     trips: dict[str, dict[str, Any]] = {}
     soon: dict[str, dict[str, Any]] = {}
     for status in statuses:
         if not isinstance(status, dict):
             continue
-        user = _user_of(status)
-        if str(user.get("id")) in own_ids or (own_name and user.get("username") == own_name):
+        if is_own(status, own_user):
             continue
+        user = user_of(status)
         trip = trip_of(status, now)
         if trip is None:
             continue
@@ -157,7 +148,8 @@ def active_friend_trips(
 
     running = sorted(trips.values(), key=lambda t: _dt(t["arrival"]))
     upcoming = sorted(
-        (t for k, t in soon.items() if k not in trips), key=lambda t: _dt(t["departure"])
+        (t for k, t in soon.items() if k not in trips),
+        key=lambda t: _dt(t["departure"]),
     )
     return [*running, *upcoming]
 

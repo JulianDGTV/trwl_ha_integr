@@ -41,6 +41,11 @@
           "active_interval": "Active journey poll interval (seconds)",
           "stats_interval": "Statistics poll interval (minutes)",
           "stats_from": "Statistics start date (YYYY-MM-DD)"
+        },
+        "data_description": {
+          "active_interval": "Journeys and friends are polled at this rate (default 60 s). The active journey is only checked while one of your journeys is running or about to start – otherwise every 5 min.",
+          "stats_interval": "Profile points and friends leaderboard at this rate. Periods, favourites and history only after your own check-ins, on date change or at least every 6 h (Träwelling caches these server-side anyway).",
+          "stats_from": "Start date for the all-time statistics."
         }
       }
     }

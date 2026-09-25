@@ -8,12 +8,10 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntity,
     BinarySensorEntityDescription,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
-from .coordinator import TraewellingCoordinator
+from .coordinator import TraewellingConfigEntry
 from .entity import TraewellingEntity
 
 DESCRIPTION = BinarySensorEntityDescription(
@@ -25,11 +23,10 @@ DESCRIPTION = BinarySensorEntityDescription(
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: TraewellingConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    coordinator: TraewellingCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([TraewellingTravellingSensor(coordinator, DESCRIPTION)])
+    async_add_entities([TraewellingTravellingSensor(entry.runtime_data, DESCRIPTION)])
 
 
 class TraewellingTravellingSensor(TraewellingEntity, BinarySensorEntity):

@@ -10,7 +10,7 @@ import math
 from datetime import datetime, timedelta
 from typing import Any
 
-from .helpers import checkin_of, destination_of, first, origin_of, parse_dt
+from .helpers import checkin_of, destination_of, distance_m, first, origin_of, parse_dt
 
 # Ein Anschluss gehört zur Kette, wenn er höchstens so lange nach der
 # (planmäßigen) Ankunft der vorherigen Fahrt startet.
@@ -64,7 +64,10 @@ def arr_live(status: dict[str, Any] | None) -> datetime | None:
 def _arr_estimate(status: dict[str, Any] | None) -> datetime | None:
     """Fährt eine Fahrt verspätet ab, hat aber (noch) keine Ankunfts-Echtzeit,
     kommt sie voraussichtlich mit derselben Verspätung an."""
-    if not (_manual(status, "manualDeparture") or (origin_of(status) or {}).get("departureReal")):
+    if not (
+        _manual(status, "manualDeparture")
+        or (origin_of(status) or {}).get("departureReal")
+    ):
         return None
     dep_p, arr_p = dep_planned(status), arr_planned(status)
     dep_l = _manual(status, "manualDeparture") or parse_dt(
@@ -76,11 +79,17 @@ def _arr_estimate(status: dict[str, Any] | None) -> datetime | None:
 
 
 def arr_is_live(status: dict[str, Any] | None) -> bool:
-    return bool(_manual(status, "manualArrival") or (destination_of(status) or {}).get("arrivalReal"))
+    return bool(
+        _manual(status, "manualArrival")
+        or (destination_of(status) or {}).get("arrivalReal")
+    )
 
 
 def dep_is_live(status: dict[str, Any] | None) -> bool:
-    return bool(_manual(status, "manualDeparture") or (origin_of(status) or {}).get("departureReal"))
+    return bool(
+        _manual(status, "manualDeparture")
+        or (origin_of(status) or {}).get("departureReal")
+    )
 
 
 def dep_source(status: dict[str, Any] | None) -> str:
@@ -114,14 +123,10 @@ def station_of(stop: dict[str, Any] | None) -> dict[str, Any]:
 
 def _distance_m(a: dict[str, Any], b: dict[str, Any]) -> int | None:
     try:
-        lat1, lon1, lat2, lon2 = (float(a["lat"]), float(a["lon"]), float(b["lat"]), float(b["lon"]))
+        coords = (float(a["lat"]), float(a["lon"]), float(b["lat"]), float(b["lon"]))
     except (TypeError, ValueError, KeyError):
         return None
-    r = 6371000
-    p1, p2 = math.radians(lat1), math.radians(lat2)
-    dp, dl = p2 - p1, math.radians(lon2 - lon1)
-    h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    return int(round(2 * r * math.asin(math.sqrt(h))))
+    return round(distance_m(*coords))
 
 
 def _same_station(a: dict[str, Any], b: dict[str, Any], dist: int | None) -> bool:
@@ -136,7 +141,9 @@ def _minutes(delta: timedelta) -> int:
     return int(math.floor(delta.total_seconds() / 60 + 0.5))
 
 
-def transfer(prev: dict[str, Any] | None, nxt: dict[str, Any] | None) -> dict[str, Any] | None:
+def transfer(
+    prev: dict[str, Any] | None, nxt: dict[str, Any] | None
+) -> dict[str, Any] | None:
     """Umstieg zwischen zwei Fahrten – Plan- und Echtzeit-Minuten plus Einschätzung."""
     if not isinstance(prev, dict) or not isinstance(nxt, dict):
         return None
@@ -164,11 +171,15 @@ def transfer(prev: dict[str, Any] | None, nxt: dict[str, Any] | None) -> dict[st
     warning = None
     if cancelled:
         rating = "cancelled"
-        warning = "Anschluss fällt aus" if stop_out.get("cancelled") else "Ankunft fällt aus"
+        warning = (
+            "Anschluss fällt aus" if stop_out.get("cancelled") else "Ankunft fällt aus"
+        )
     elif planned is not None and planned < 0:
         # Schon laut Fahrplan unmöglich → Check-in prüfen.
         rating = "conflict"
-        warning = f"Abfahrt laut Fahrplan {-planned} min vor der Ankunft – Check-in prüfen"
+        warning = (
+            f"Abfahrt laut Fahrplan {-planned} min vor der Ankunft – Check-in prüfen"
+        )
     elif minutes < need and src_in != "plan" and src_out == "plan" and arr_delay > 0:
         # Ankunft hat Echtzeit (verspätet), der Anschluss nicht – er kann
         # genauso verspätet sein. Nicht als „verpasst“ werten.
@@ -182,9 +193,8 @@ def transfer(prev: dict[str, Any] | None, nxt: dict[str, Any] | None) -> dict[st
         warning = f"Nach Echtzeit {-minutes} min zu spät für den Anschluss in {where}"
     elif minutes < need:
         rating = "risk"
-        warning = (
-            f"Nur {minutes} min zum Umsteigen in {where}"
-            + ("" if same else f" (Fußweg ca. {walk} min)" if walk else "")
+        warning = f"Nur {minutes} min zum Umsteigen in {where}" + (
+            "" if same else f" (Fußweg ca. {walk} min)" if walk else ""
         )
     elif minutes < need + 3:
         rating = "tight"
@@ -207,7 +217,9 @@ def transfer(prev: dict[str, Any] | None, nxt: dict[str, Any] | None) -> dict[st
         "same_station": same,
         "walk_m": None if same else dist,
         "walk_minutes": walk,
-        "arrival_platform": first(stop_in, "arrivalPlatformReal", "arrivalPlatformPlanned", "platform"),
+        "arrival_platform": first(
+            stop_in, "arrivalPlatformReal", "arrivalPlatformPlanned", "platform"
+        ),
         "departure_platform": first(
             stop_out, "departurePlatformReal", "departurePlatformPlanned", "platform"
         ),
