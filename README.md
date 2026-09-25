@@ -1,4 +1,4 @@
-# 🚆 Träwelling für Home Assistant · v1.9.0
+# 🚆 Träwelling für Home Assistant · v1.9.1
 
 Custom Integration für [traewelling.de](https://traewelling.de): deine laufende
 Fahrt, die Fahrten deiner Freunde, deine Reisestatistiken – und Check-in direkt
@@ -333,6 +333,60 @@ sections:
           columns: full
 ```
 
+## 📱 Sperrbildschirm & Handy-Widgets (nur mit Home Assistant)
+
+**Live-Aktivität (iPhone) / Live Update (Android):** Die laufende Fahrt auf dem
+Sperrbildschirm und in der Dynamic Island – Linie und Ziel, Fortschrittsbalken,
+Live-Countdown bis zur Ankunft, Farbe je Verkehrsmittel. Beim Anschluss wechselt
+sie automatisch, nach der Ankunft verschwindet sie. Braucht Home Assistant 2026.7+,
+die Companion-App und iOS 17.2+ bzw. Android 16+.
+
+[![Blueprint importieren](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FJulianDGTV%2Ftrwl_ha_integr%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Ftraewelling%2Flive_activity.yaml)
+
+Blueprint importieren → **Automatisierung erstellen** → „Unterwegs“-Sensor und Handy
+wählen → speichern. Optionen: Countdown oder Strecke als Text, Dashboard-Pfad beim
+Antippen. Updates kommen bei Abfahrt/Ankunft, Verspätungsänderung und sonst alle 10 min
+(iOS drosselt häufigere). Auf dem iPhone muss unter *Einstellungen → Home Assistant*
+„Live-Aktivitäten“ an sein.
+
+**Android-Homebildschirm:** Widget **Template** der Companion-App mit diesem Template
+(findet die Entitäten selbst):
+
+```jinja
+{%- set b = integration_entities('traewelling') | select('search', '^binary_sensor\\.') | list | first | default('') -%}
+{%- set u = integration_entities('traewelling') | select('search', '_nachste_fahrt$') | list | first | default('') -%}
+{%- if b and is_state(b, 'on') -%}
+{%- set dp = as_timestamp(state_attr(b, 'departure_planned'), 0) -%}
+{%- set dr = as_timestamp(state_attr(b, 'departure_real'), dp) -%}
+{%- set ap = as_timestamp(state_attr(b, 'arrival_planned'), 0) -%}
+{%- set ar = as_timestamp(state_attr(b, 'arrival_real'), ap) -%}
+{%- set p = ([[(now().timestamp() - dr) / ([ar - dr, 60] | max), 0] | max, 1] | min * 100) | round(0) | int -%}
+{%- set dd = ((dr - dp) / 60) | round(0) | int -%}
+{%- set da = ((ar - ap) / 60) | round(0) | int -%}
+{%- set left = ([ar - now().timestamp(), 0] | max / 60) | round(0) | int -%}
+<b><font color='#ec0016'>{{ state_attr(b, 'line') }}</font></b>
+{%- if da > 0 %} <font color='#db4437'><b>+{{ da }} min</b></font>{% elif state_attr(b, 'arrival_real') %} <font color='#43a047'>pünktlich</font>{% endif %}<br>
+<big><b>{{ dp | timestamp_custom('%H:%M') }}</b></big>{% if dd > 0 %} <font color='#db4437'>+{{ dd }}</font>{% endif %} {{ state_attr(b, 'origin') }}
+{%- if state_attr(b, 'origin_platform') %} <small>Gl. {{ state_attr(b, 'origin_platform') }}</small>{% endif %}<br>
+<big><b>{{ ap | timestamp_custom('%H:%M') }}</b></big>{% if da > 0 %} <font color='#db4437'>+{{ da }}</font>{% endif %} {{ state_attr(b, 'destination') }}
+{%- if state_attr(b, 'destination_platform') %} <small>Gl. {{ state_attr(b, 'destination_platform') }}</small>{% endif %}<br>
+<font color='#ec0016'>{{ '━' * (p // 5) }}</font>●<font color='#777777'>{{ '━' * (20 - p // 5) }}</font><br>
+<b>{{ p }} %</b> · noch {{ left }} min · {{ state_attr(b, 'distance_km') }} km · {{ state_attr(b, 'points') }} Punkte
+{%- elif u and states(u) not in ['unknown', 'unavailable'] -%}
+{%- set d = as_timestamp(state_attr(u, 'departure_real') or state_attr(u, 'departure_planned'), 0) -%}
+<b><font color='#03a9f4'>Bald: {{ state_attr(u, 'line') }}</font></b> · in {{ ([d - now().timestamp(), 0] | max / 60) | round(0) | int }} min<br>
+<big><b>{{ as_timestamp(state_attr(u, 'departure_planned'), d) | timestamp_custom('%H:%M') }}</b></big> {{ state_attr(u, 'origin') }}
+{%- if state_attr(u, 'origin_platform') %} <small>Gl. {{ state_attr(u, 'origin_platform') }}</small>{% endif %}<br>
+<big><b>{{ as_timestamp(state_attr(u, 'arrival_planned'), 0) | timestamp_custom('%H:%M') }}</b></big> {{ state_attr(u, 'destination') }}
+{%- else -%}
+🚆 Gerade keine Fahrt
+{%- endif -%}
+```
+
+**iPhone ohne Live-Aktivität:** In der HA-App gibt es für den Sperrbildschirm das
+Widget *Gauge* (rund, z. B. Fortschritt in %) und *Details* (einzeilig), jeweils mit
+Templates.
+
 ## 🤖 Automatisierungs-Beispiele
 
 ```yaml
@@ -448,6 +502,7 @@ logger:
 
 ## 📝 Changelog
 
+- **1.9.1** – 📱 Blueprint „laufende Fahrt als Live-Aktivität“ für den Sperrbildschirm (iPhone + Dynamic Island, Android Live Update) mit Fortschritt, Countdown und automatischem Wechsel beim Anschluss · Template für das Android-Homebildschirm-Widget
 - **1.9.0** – 🧹 Aufgeräumt und sparsamer: gut die Hälfte weniger Anfragen im Normalbetrieb bei gleichem Funktionsumfang · aktive Fahrt nur abfragen, wenn eine eigene Fahrt läuft oder bald startet · Dashboard-Seite 2 nur bei Bedarf · Statistik nach „Lebensdauer“ gruppiert (Zeiträume nur nach eigenen Check-ins/Datumswechsel) · 💾 Zwischenspeicher für Abfahrten, Fahrtverläufe, Stationssuche, „In meiner Nähe“, zuletzt genutzte Stationen und Fahrkarten; gleiche parallele Anfragen werden zusammengefasst · 📵 Live-Abfahrten pausieren, solange die Karte nicht sichtbar ist · 🗄️ Große Listen-Attribute (Anschlüsse, Freunde, Ranglisten …) werden nicht mehr in die Datenbank geschrieben · 🐛 „Punkte gesamt“ (= Punkte der letzten 7 Tage) nicht mehr als stetig steigend markiert · 🔌 HTTP-Verbindungen werden immer sauber freigegeben · 🏗️ Code in Module aufgeteilt (Anschlüsse, Statistik, Cache), `runtime_data` statt `hass.data`, Beschreibungen in den Optionen
 - **1.8.2** – 👥 Freunde, die bald losfahren, erscheinen schon in der Freunde-Karte – mit „in 15 min“ und „Abfahrt in …“ wie bei deinen eigenen Fahrten · „Danach: …“, wenn ein Freund den Anschluss schon eingecheckt hat · Sensor „Freunde unterwegs“ mit `travelling` und `soon` · 🏷️ Versionsnummer im README-Titel
 - **1.8.1** – ⚠️ Warnungen bei knappen, gefährdeten, verpassten und „unlogischen“ Anschlüssen (Banner + Hinweis am Umstieg), die folgenden Fahrten bleiben sichtbar · ❔ Verspätete Ankunft + Anschluss ohne Echtzeit = „unklar“ statt „verpasst“ · 📡 Echtzeit für solche Anschlüsse von der Live-Abfahrtstafel · 🔮 Ankunft wird aus der Abfahrtsverspätung geschätzt · 🔗 Große Verspätungen lassen die Kette nicht mehr abreißen
