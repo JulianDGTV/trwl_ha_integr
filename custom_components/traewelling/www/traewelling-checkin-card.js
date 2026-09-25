@@ -16,7 +16,7 @@
  */
 
 const DOMAIN = "traewelling";
-const VERSION = "1.8.0";
+const VERSION = "1.8.2";
 
 const TYPES = [
   ["", "Alle"],
@@ -169,29 +169,39 @@ const XFER = {
   risk: ["mdi:alert", "Gefährdet", "bad"],
   missed: ["mdi:alert-octagon", "Verpasst?", "bad"],
   cancelled: ["mdi:cancel", "Fällt aus", "bad"],
+  unknown: ["mdi:help-circle-outline", "Unklar", "warn"],
+  conflict: ["mdi:alert-circle", "Unlogisch", "bad"],
 };
+const XFER_ALERT = ["risk", "missed", "cancelled", "unknown", "conflict"];
 
 /** Umstieg zwischen zwei Fahrten (Minuten nach Echtzeit, Plan in Klammern). */
 function transferHtml(x) {
   if (!x) return "";
   const [icon, label, cls] = XFER[x.rating] || XFER.ok;
   const min = typeof x.minutes === "number" ? x.minutes : null;
-  const mins = min === null ? "" : `${min < 0 ? "−" : ""}${Math.abs(min)} min`;
+  const unknown = x.rating === "unknown" && typeof x.minutes_planned === "number";
+  const mins = unknown
+    ? `Plan ${x.minutes_planned} min`
+    : min === null ? "" : `${min < 0 ? "−" : ""}${Math.abs(min)} min`;
   const plan =
-    typeof x.minutes_planned === "number" && x.minutes_planned !== min
+    !unknown && typeof x.minutes_planned === "number" && x.minutes_planned !== min
       ? `<s title="laut Fahrplan ${x.minutes_planned} min">${x.minutes_planned}</s>`
       : "";
   const where = x.same_station === false && x.to_station
     ? `🚶 ${x.walk_m ? `${x.walk_m >= 1000 ? `${(x.walk_m / 1000).toLocaleString("de-DE", { maximumFractionDigits: 1 })} km` : `${x.walk_m} m`} → ` : "→ "}${esc(x.to_station)}`
-    : x.arrival_platform || x.departure_platform
-      ? `Gl. ${esc(x.arrival_platform || "?")} → ${esc(x.departure_platform || "?")}`
-      : esc(x.station || "");
+    : x.arrival_platform && x.departure_platform
+      ? `Gl. ${esc(x.arrival_platform)} → ${esc(x.departure_platform)}`
+      : x.departure_platform
+        ? `weiter ab Gl. ${esc(x.departure_platform)}`
+        : esc(x.station || "");
   return `
     <div class="xfer ${cls}">
       <ha-icon icon="${icon}"></ha-icon>
       <span class="xl"><b>${label}</b>${mins ? ` · <b>${mins}</b>` : ""}${plan ? ` ${plan}` : ""}</span>
       <span class="xw">${where}</span>
-      ${x.live ? `<span class="xlive" title="Echtzeit">●</span>` : ""}
+      ${x.live ? `<span class="xlive" title="${x.departure_source === "board" ? "Echtzeit von der Abfahrtstafel" : "Echtzeit"}">●</span>` : ""}
+      ${x.warning ? `<div class="xwarn">${esc(x.warning)}</div>` : ""}
+      ${!x.warning && x.departure_source === "board" ? `<div class="xnote">Abfahrt laut Live-Abfahrtstafel</div>` : ""}
     </div>`;
 }
 
@@ -200,7 +210,8 @@ function legHtml(t) {
   const depP = toDate(t.departure_planned);
   const arrP = toDate(t.arrival_planned);
   const dDep = delayMin(t.departure_planned, t.departure_real);
-  const dArr = delayMin(t.arrival_planned, t.arrival_real);
+  const est = !t.arrival_real && t.arrival_estimated;
+  const dArr = delayMin(t.arrival_planned, t.arrival_real || (est ? t.arrival_expected : null));
   const [bg, fg] = lineColor({ product: t.category });
   const dep = toDate(t.departure_real) || depP;
   const until = dep ? Math.round((dep - new Date()) / 60000) : null;
@@ -210,7 +221,7 @@ function legHtml(t) {
       <div class="leg-main">
         <div class="leg-l"><b>${hhmm(depP)}</b>${dDep > 0 ? `<span class="d">+${dDep}</span>` : ""}
           <span class="nm">${esc(t.origin)}</span>${t.origin_platform ? `<span class="plat">Gl. ${esc(t.origin_platform)}</span>` : ""}</div>
-        <div class="leg-l sub2"><span>${hhmm(arrP)}</span>${dArr > 0 ? `<span class="d">+${dArr}</span>` : ""}
+        <div class="leg-l sub2"><span>${hhmm(arrP)}</span>${dArr > 0 ? `<span class="d" ${est ? `title="geschätzt aus der Abfahrtsverspätung"` : ""}>${est ? "~" : ""}+${dArr}</span>` : ""}
           <span class="nm">${esc(t.destination)}</span>${until !== null && until > 0 && until < 120 ? `<span class="in">in ${until} min</span>` : ""}</div>
       </div>
     </div>`;
@@ -220,8 +231,23 @@ function legHtml(t) {
 function chainHtml(legs, title) {
   if (!legs?.length) return "";
   const last = legs[legs.length - 1];
-  const arr = toDate(last.arrival_real) || toDate(last.arrival_planned);
+  const arr = toDate(last.arrival_real) || toDate(last.arrival_expected) || toDate(last.arrival_planned);
+  const alerts = legs.filter((l) => XFER_ALERT.includes(l.transfer?.rating));
+  const worst = alerts.find((l) => l.transfer.rating !== "unknown") || alerts[0];
+  const banner = worst
+    ? `<div class="alert ${worst.transfer.rating === "unknown" ? "warn" : "bad"}">
+        <ha-icon icon="${worst.transfer.rating === "unknown" ? "mdi:help-circle-outline" : "mdi:alert"}"></ha-icon>
+        <span>${
+          worst.transfer.rating === "unknown"
+            ? `Anschluss in ${esc(worst.transfer.station || "?")} unklar – keine Echtzeit`
+            : worst.transfer.rating === "conflict"
+              ? `Check-in prüfen: ${esc(worst.line || "Anschluss")} passt zeitlich nicht`
+              : `Anschluss ${esc(worst.line || "")} in ${esc(worst.transfer.station || "?")} ${worst.transfer.rating === "cancelled" ? "fällt aus" : worst.transfer.rating === "missed" ? "wohl nicht erreichbar" : "gefährdet"}`
+        }${alerts.length > 1 ? ` · ${alerts.length} Warnungen` : ""}</span>
+      </div>`
+    : "";
   return `
+    ${banner}
     <div class="chain">
       <div class="chain-h"><span>${esc(title)}</span>${arr ? `<span>an ${esc(last.destination)} ${hhmm(arr)}</span>` : ""}</div>
       ${legs.map((l) => `${transferHtml(l.transfer)}${legHtml(l)}`).join("")}
@@ -1217,6 +1243,12 @@ const STYLE = `<style>
   .xfer .xl s { opacity: .7; }
   .xfer .xw { flex: 1 1 auto; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
   .xfer .xlive { flex: none; color: var(--success-color, #43a047); font-size: .8em; }
+  .xfer .xwarn, .xfer .xnote { flex: 1 0 100%; box-sizing: border-box; padding-left: 26px; font-size: .92em; line-height: 1.3; }
+  .xfer .xnote { color: var(--secondary-text-color); }
+  .alert { display: flex; align-items: flex-start; gap: 8px; margin-top: 12px; padding: 10px 12px; border-radius: 10px; font-size: .92em; line-height: 1.3; }
+  .alert ha-icon { --mdc-icon-size: 18px; flex: none; }
+  .alert.bad { background: rgba(219, 68, 55, .14); color: var(--error-color, #db4437); }
+  .alert.warn { background: rgba(255, 166, 0, .14); color: var(--warning-color, #ffa600); }
   .xfer.ok ha-icon { color: var(--primary-color); }
   .xfer.warn, .xfer.warn ha-icon { color: var(--warning-color, #ffa600); }
   .xfer.bad, .xfer.bad ha-icon { color: var(--error-color, #db4437); }
@@ -1369,6 +1401,19 @@ class TraewellingFriendsCard extends HTMLElement {
     return Array.isArray(trips) ? trips : [];
   }
 
+  /** Startet noch – live nach Uhrzeit, nicht nur nach dem letzten Poll. */
+  _isSoon(t) {
+    const dep = toDate(t.departure || t.departure_planned);
+    return dep ? dep > new Date() : Boolean(t.upcoming);
+  }
+
+  _nextHtml(n) {
+    const dep = toDate(n.departure_planned || n.departure);
+    const dDep = delayMin(n.departure_planned, n.departure);
+    return `<div class="next"><ha-icon icon="mdi:arrow-right-bottom"></ha-icon>
+      <span>Danach: <b>${esc(n.line || "Fahrt")}</b> um <b>${hhmm(dep)}</b>${dDep > 0 ? ` <span class="late">+${dDep}</span>` : ""} ab ${esc(n.origin)}${n.origin_platform ? ` · Gl. ${esc(n.origin_platform)}` : ""} → ${esc(n.destination)}</span></div>`;
+  }
+
   _render() {
     if (!this._hass || !this._config) return;
     const trips = this._trips();
@@ -1405,7 +1450,10 @@ class TraewellingFriendsCard extends HTMLElement {
                 ${likeBtn}
                 ${t.url ? `<a class="chip" href="${esc(t.url)}" target="_blank" rel="noopener">Status</a>` : ""}
               </div>
-              <div class="pad">${tripHtml({ ...t, points: null })}</div>
+              <div class="pad">
+                ${tripHtml({ ...t, points: null }, { upcoming: this._isSoon(t) })}
+                ${t.next && !this._isSoon(t) ? this._nextHtml(t.next) : ""}
+              </div>
             </div>`;
           })
           .join("")
@@ -1439,7 +1487,7 @@ if (!customElements.get("traewelling-friends-card")) {
   window.customCards.push({
     type: "traewelling-friends-card",
     name: "Träwelling Freunde unterwegs",
-    description: "Laufende Fahrten der Leute, denen du folgst",
+    description: "Laufende und bald startende Fahrten der Leute, denen du folgst",
     preview: false,
   });
 }
