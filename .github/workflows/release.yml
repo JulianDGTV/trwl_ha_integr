@@ -1,0 +1,88 @@
+# Erstellt automatisch ein GitHub-Release, sobald eine neue Version hochgeladen
+# ist. HACS meldet Updates dann in Home Assistant unter Einstellungen → Updates –
+# mit Versionsnummer und Changelog statt Commit-Kennung.
+#
+# Ablauf: Nach jedem Upload auf main wird 10 Minuten gewartet (jeder weitere
+# Upload startet die Wartezeit neu). Danach wird geprüft, ob manifest.json,
+# Karte und README-Titel dieselbe Version tragen und es dazu noch kein Release
+# gibt – dann entsteht das Release „vX.Y.Z“ mit dem Changelog-Eintrag aus der README.
+# Über „Run workflow“ lässt es sich auch sofort von Hand starten.
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Warten, bis alle Dateien hochgeladen sind
+        if: github.event_name == 'push'
+        run: sleep 600
+
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Version prüfen
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          manifest=$(python3 -c "import json; print(json.load(open('custom_components/traewelling/manifest.json'))['version'])")
+          card=$(grep -oP 'const VERSION = "\K[^"]+' custom_components/traewelling/www/traewelling-checkin-card.js)
+          readme=$(head -n 1 README.md | grep -oP 'v\K[0-9][0-9.]*$' || true)
+          echo "manifest=$manifest karte=$card readme=$readme"
+          if gh release view "v$manifest" > /dev/null 2>&1; then
+            echo "Release v$manifest gibt es schon – nichts zu tun."
+            echo "create=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$manifest" != "$card" ] || [ "$manifest" != "$readme" ]; then
+            echo "::error::Versionen passen nicht zusammen (manifest $manifest, Karte $card, README $readme) – sind alle Dateien hochgeladen?"
+            exit 1
+          fi
+          echo "version=$manifest" >> "$GITHUB_OUTPUT"
+          echo "create=true" >> "$GITHUB_OUTPUT"
+
+      - name: Changelog aus der README holen
+        if: steps.version.outputs.create == 'true'
+        run: |
+          python3 - "${{ steps.version.outputs.version }}" > notes.md <<'PY'
+          import sys
+
+          version = sys.argv[1]
+          prefix = f"- **{version}** –"
+          for line in open("README.md", encoding="utf-8"):
+              if line.startswith(prefix):
+                  items = line[len(prefix):].strip().split(" · ")
+                  print("\n".join(f"- {item.strip()}" for item in items))
+                  break
+          else:
+              print(f"Version {version}")
+          print()
+          print("**Update:** HACS → Träwelling → Herunterladen → Home Assistant neu starten.")
+          PY
+          cat notes.md
+
+      - name: Release erstellen
+        if: steps.version.outputs.create == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ steps.version.outputs.version }}" \
+            --target "$(git rev-parse HEAD)" \
+            --title "v${{ steps.version.outputs.version }}" \
+            --notes-file notes.md \
+            --latest
