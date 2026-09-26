@@ -1,4 +1,4 @@
-# 🚆 Träwelling für Home Assistant · v1.9.4
+# 🚆 Träwelling für Home Assistant · v1.9.5
 
 Custom Integration für [traewelling.de](https://traewelling.de): deine laufende
 Fahrt, die Fahrten deiner Freunde, deine Reisestatistiken – und Check-in direkt
@@ -32,6 +32,10 @@ aus dem Dashboard.
 **HACS (empfohlen):** HACS → ⋮ → *Benutzerdefinierte Repositories* →
 `https://github.com/v8b-kg/trwl_ha_integr`, Kategorie *Integration* →
 *Träwelling* herunterladen → Home Assistant neu starten.
+
+**Updates:** Jede Version erscheint als [GitHub-Release](https://github.com/v8b-kg/trwl_ha_integr/releases).
+Home Assistant meldet neue Versionen dann von selbst unter *Einstellungen → Updates* –
+mit Changelog; *Installieren* und anschließend neu starten.
 
 **Manuell:** Ordner `custom_components/traewelling` nach
 `<config>/custom_components/traewelling` kopieren und neu starten.
@@ -534,6 +538,7 @@ verbunden. Wenn du Träwelling unterstützen möchtest:
 
 ## 📝 Changelog
 
+- **1.9.5** – 🔄 Update-Hinweise in Home Assistant: jede Version wird automatisch als GitHub-Release veröffentlicht (mit Changelog), HACS meldet sie unter Einstellungen → Updates · HACS bietet damit fertige Versionen an statt halb hochgeladener Zwischenstände
 - **1.9.4** – 💚 Hinweis auf den Träwelling e.V. als Betreiber von Träwelling und Spendenaufruf (oben in der README und im Lizenz-Abschnitt) · 🧹 Umzugs-Hinweis entfernt
 - **1.9.3** – 📄 Lizenz: AGPL-3.0, Copyright V8B KG (wie Träwelling) · Hinweis zu Beiträgen und „inoffiziell, nicht verbunden mit Träwelling“
 - **1.9.2** – 🏢 Repository ist zu [V8B KG](https://v8b.eco) umgezogen: neue Adresse github.com/v8b-kg/trwl_ha_integr in Doku- und Issue-Links, User-Agent und Blueprint (alte Links leiten automatisch weiter)
